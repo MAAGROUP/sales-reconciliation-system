@@ -46,7 +46,7 @@
             <strong>{{ e.reference_id }}</strong>
             {% if e.request_status == 'rejected' %}
               <span class="badge flag" style="background:#FBE9E6; color:#B94A3F; margin-left:6px;">Rejected</span>
-              {% if e.request_reason %}<div style="font-size:12px; color:#8A8578; margin-top:4px;">Reason: {{ e.request_reason }}</div>{% endif %}
+              {% if e.request_reason %}<div style="font-size:12px; color:#8A8578; margin-top:4px;">Reason: {{ e.request_reason }}</div>{% endif %}{% if e.request_decision_note %}<div style="font-size:12px; color:#B94A3F; margin-top:4px;">Audit note: {{ e.request_decision_note }}</div>{% endif %}
             {% endif %}
           </td>
           <td>{{ e.date }}</td>

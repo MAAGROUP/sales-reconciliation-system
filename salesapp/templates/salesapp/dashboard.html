@@ -243,13 +243,17 @@ function toggleAuditGroup(id){
     {% csrf_token %}
     <input type="hidden" name="entry_id" value="{{ selected_entry.id }}">
     <input type="hidden" name="action" value="request_decision">
+    <div style="flex-basis:100%;">
+      <label style="color:#854F0B; font-weight:700;">Rejection note <span style="font-weight:400;">(required to reject)</span></label>
+      <textarea name="reject_note" rows="2" placeholder="Why is this request rejected?" style="width:100%;"></textarea>
+    </div>
     <button type="submit" name="decision" value="approve" class="btn">Approve</button>
-    <button type="submit" name="decision" value="reject" class="btn secondary">Reject</button>
+    <button type="submit" name="decision" value="reject" class="btn secondary" onclick="var t=this.form.reject_note; if(!t.value.trim()){alert('Please write the reason for rejecting this request.'); t.focus(); return false;}">Reject</button>
   </form>
   {% endif %}
 </div>
 {% elif selected_entry and selected_entry.request_status == 'rejected' %}
-<div class="card" style="background:#FBE9E6;"><strong style="color:#B94A3F;">This waiter request was rejected.</strong></div>
+<div class="card" style="background:#FBE9E6;"><strong style="color:#B94A3F;">This waiter request was rejected.</strong>{% if selected_entry.request_decision_note %}<div style="margin-top:6px; font-size:13px; color:#1F3B4D;"><b>Audit note:</b> {{ selected_entry.request_decision_note }}</div>{% endif %}</div>
 {% endif %}
 
 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px 14px; background:#F7F5EE; border:1px solid #E7E4DB; border-radius:10px; padding:10px 14px; margin-bottom:14px; font-size:13px; color:#6F6A5C;">

@@ -19,11 +19,11 @@
   <h3 style="color:#854F0B;">Requests sent to Audit</h3>
   <p style="color:#854F0B; font-size:13px; margin-top:0;">Shifts you sent for a day that was already closed, or a shift that was already submitted. Audit decides on them.</p>
   <table>
-    <thead><tr><th>Request No.</th><th>Date</th><th>Shift</th><th>Reason</th><th>Status</th></tr></thead>
+    <thead><tr><th>Request No.</th><th>Date</th><th>Shift</th><th>Reason</th><th>Status</th><th>Audit Note</th></tr></thead>
     <tbody>
     {% for r in my_requests %}
       <tr><td>{{ r.reference_id }}</td><td>{{ r.date }}</td><td>{{ r.get_shift_display }}</td><td>{{ r.request_reason }}</td>
-        <td>{% if r.request_status == 'pending' %}<span class="badge flag" style="background:#FFF3D6; color:#8A6410;">Waiting for Audit</span>{% elif r.request_status == 'approved' %}<span class="badge" style="background:#E4F1EA; color:#2E7D5B;">Approved</span>{% else %}<span class="badge flag">Rejected</span>{% endif %}</td></tr>
+        <td>{% if r.request_status == 'pending' %}<span class="badge flag" style="background:#FFF3D6; color:#8A6410;">Waiting for Audit</span>{% elif r.request_status == 'approved' %}<span class="badge" style="background:#E4F1EA; color:#2E7D5B;">Approved</span>{% else %}<span class="badge flag">Rejected</span>{% endif %}</td><td>{{ r.request_decision_note|default:"-" }}</td></tr>
     {% endfor %}
     </tbody>
   </table>

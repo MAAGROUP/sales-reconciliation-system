@@ -1280,10 +1280,15 @@ def _decide_request(request, entry):
                      details=f'Waiter request approved ({entry.request_reason}){note}')
         messages.success(request, f'Request {entry.reference_id} approved{note}. Review the shift again and re-close the day.')
     elif decision == 'reject':
+        reject_note = (request.POST.get('reject_note') or '').strip()
+        if not reject_note:
+            messages.error(request, 'Please write the reason for rejecting this request.')
+            return redirect(f'/dashboard/?entry_id={entry.id}')
         entry.request_status = 'rejected'
-        entry.save(update_fields=['request_status'])
+        entry.request_decision_note = reject_note
+        entry.save(update_fields=['request_status', 'request_decision_note'])
         log_activity(request, 'entry_archived', description=entry.reference_id,
-                     details=f'Waiter request rejected ({entry.request_reason})')
+                     details=f'Waiter request rejected ({entry.request_reason}). Audit note: {reject_note}')
         messages.success(request, f'Request {entry.reference_id} rejected.')
     else:
         messages.error(request, 'Please choose approve or reject.')

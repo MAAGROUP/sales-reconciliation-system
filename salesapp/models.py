@@ -225,6 +225,7 @@ class ShiftEntry(models.Model):
     # submitted). It is kept archived (so it counts nowhere) until Audit approves or rejects it.
     request_status = models.CharField(max_length=10, blank=True, default='')   # '' | pending | approved | rejected
     request_reason = models.CharField(max_length=120, blank=True, default='')
+    request_decision_note = models.TextField(blank=True, default='')   # Audit's note when deciding the request
     created_at = models.DateTimeField(auto_now_add=True)
 
     # Snapshot of the numbers exactly as the waiter submitted them — captured
