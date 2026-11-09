@@ -425,6 +425,63 @@ class CollectorHandover(models.Model):
         return f'Handover for {self.shift_entry}'
 
 
+class BankDeposit(models.Model):
+    """The collector's weekly bank deposit of the branches' cash: the period it covers, the amount
+    paid in, and the bank receipt(s). Audit approves it; until then the collector can still edit it."""
+
+    date_from = models.DateField()
+    date_to = models.DateField()
+    deposit_date = models.DateField()
+    amount = models.DecimalField(max_digits=12, decimal_places=3)
+    note = models.TextField(blank=True)
+
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    approved = models.BooleanField(default=False)
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    approved_at = models.DateTimeField(null=True, blank=True)
+    audit_note = models.TextField(blank=True)
+    # True while Audit has sent it back and the collector has not saved a correction yet.
+    returned = models.BooleanField(default=False)
+    # Branches that are NOT part of this deposit (the collector un-ticked them). Empty = every
+    # branch, which is also how deposits saved before this existed are read.
+    excluded_branches = models.ManyToManyField('Branch', blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['-date_to', '-id']
+
+    def __str__(self):
+        return f'Bank deposit {self.date_from} → {self.date_to}'
+
+
+class BankDepositEvent(models.Model):
+    """One line of a deposit's history: created, edited (with what changed), approved or sent back."""
+    deposit = models.ForeignKey(BankDeposit, on_delete=models.CASCADE, related_name='events')
+    kind = models.CharField(max_length=20)          # created / edited / approved / returned
+    username = models.CharField(max_length=150, blank=True)
+    note = models.TextField(blank=True)
+    details = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+
+    def __str__(self):
+        return f'{self.kind} - {self.deposit}'
+
+
+class BankDepositFile(models.Model):
+    """One receipt (photo or PDF) of a bank deposit."""
+    deposit = models.ForeignKey(BankDeposit, on_delete=models.CASCADE, related_name='files')
+    file = models.FileField(upload_to='bank_deposits/%Y/%m/')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'Receipt for {self.deposit}'
+
+
 class DayClose(models.Model):
     """Foodics is reported once per business day, not per shift. When every shift of the
     day has been submitted and approved, Audit enters the day's Foodics figure here and
@@ -476,6 +533,8 @@ class ActivityLog(models.Model):
         ('user_activated', 'User Activated'),
         ('user_deactivated', 'User Deactivated'),
         ('account_unlocked', 'Account Unlocked'),
+        ('password_link_created', 'Password Link Created'),
+        ('password_reset_done', 'Password Reset Done'),
         ('branch_created', 'Branch Created'),
         ('branch_edited', 'Branch Edited'),
         ('branch_deleted', 'Branch Deleted'),
@@ -489,6 +548,10 @@ class ActivityLog(models.Model):
         ('collector_approved', 'Collector Approved'),
         ('day_closed', 'Day Closed'),
         ('cash_reconciled', 'Cash Reconciled'),
+        ('bank_deposit_saved', 'Bank Deposit Saved'),
+        ('bank_deposit_deleted', 'Bank Deposit Deleted'),
+        ('bank_deposit_approved', 'Bank Deposit Approved'),
+        ('bank_deposit_reopened', 'Bank Deposit Reopened'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='activity_logs')
@@ -517,3 +580,17 @@ class ActivityLog(models.Model):
         text = re.sub(r'^(?:Edited|Corrected) by [^\n]*?:\s*\n', '', text)
         text = re.sub(r'^Recorded by [^\n:]*?: ', 'Recorded: ', text)
         return text
+
+
+class WaiterResetLink(models.Model):
+    """A one-time link Audit hands to a waiter who forgot the password. Only a hash of the token
+    is stored; the link works once, for a limited time, and a newer link replaces the older one."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reset_links')
+    token_hash = models.CharField(max_length=64, unique=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f'Reset link for {self.user.username}'

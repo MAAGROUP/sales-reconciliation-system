@@ -204,7 +204,15 @@ function showAuditTab(name){
   cashEls.forEach(el => { if(el) el.style.display = name === 'cash' ? 'block' : 'none'; });
   document.getElementById('tabBtnSalesA').classList.toggle('active', name === 'sales');
   document.getElementById('tabBtnCashA').classList.toggle('active', name === 'cash');
+  try { sessionStorage.setItem('auditTab', JSON.stringify({entry: '{{ selected_entry.id|default:"" }}', tab: name})); } catch(e) {}
 }
+document.addEventListener('DOMContentLoaded', function(){
+  // After Save / Approve the page reloads: reopen the tab she was on, not the first one.
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('auditTab') || 'null');
+    if (saved && saved.entry && saved.entry === '{{ selected_entry.id|default:"" }}' && document.getElementById('tabBtnSalesA')) showAuditTab(saved.tab);
+  } catch(e) {}
+});
 </script>
 
 <script>
@@ -217,6 +225,15 @@ function toggleAuditGroup(id){
 }
 </script>
 
+{% if selected_entry %}
+<div class="modal-overlay">
+<div class="modal-box">
+<a href="{% url 'dashboard' %}?{% for s in shift_filter %}shift_filter={{ s }}&{% endfor %}{{ branch_qs|safe }}{{ stage_qs|safe }}{% if date_from %}date_from={{ date_from }}&{% endif %}{% if date_to %}date_to={{ date_to }}{% endif %}" class="modal-close" title="Close">&times;</a>
+<div class="modal-inner">
+<a href="{% url 'dashboard' %}?{% for s in shift_filter %}shift_filter={{ s }}&{% endfor %}{{ branch_qs|safe }}{{ stage_qs|safe }}{% if date_from %}date_from={{ date_from }}&{% endif %}{% if date_to %}date_to={{ date_to }}{% endif %}" class="btn secondary small" style="text-decoration:none; display:inline-flex; align-items:center; gap:6px; margin-bottom:16px;">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+  Back
+</a>
 {% if selected_entry and selected_entry.request_status == 'pending' %}
 <div class="card" style="background:#FAEEDA; border:2px solid #E8C98A;">
   <h3 style="color:#854F0B;">Waiter request · {{ selected_entry.request_reason }}</h3>
@@ -234,15 +251,6 @@ function toggleAuditGroup(id){
 {% elif selected_entry and selected_entry.request_status == 'rejected' %}
 <div class="card" style="background:#FBE9E6;"><strong style="color:#B94A3F;">This waiter request was rejected.</strong></div>
 {% endif %}
-{% if selected_entry %}
-<div class="modal-overlay">
-<div class="modal-box">
-<a href="{% url 'dashboard' %}?{% for s in shift_filter %}shift_filter={{ s }}&{% endfor %}{{ branch_qs|safe }}{{ stage_qs|safe }}{% if date_from %}date_from={{ date_from }}&{% endif %}{% if date_to %}date_to={{ date_to }}{% endif %}" class="modal-close" title="Close">&times;</a>
-<div class="modal-inner">
-<a href="{% url 'dashboard' %}?{% for s in shift_filter %}shift_filter={{ s }}&{% endfor %}{{ branch_qs|safe }}{{ stage_qs|safe }}{% if date_from %}date_from={{ date_from }}&{% endif %}{% if date_to %}date_to={{ date_to }}{% endif %}" class="btn secondary small" style="text-decoration:none; display:inline-flex; align-items:center; gap:6px; margin-bottom:16px;">
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-  Back
-</a>
 
 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px 14px; background:#F7F5EE; border:1px solid #E7E4DB; border-radius:10px; padding:10px 14px; margin-bottom:14px; font-size:13px; color:#6F6A5C;">
   <span>Submitted by <b style="color:#1F3B4D; font-size:15px;">{{ selected_entry.accountant|default:"—" }}</b>{% if selected_entry.submitted_punch %}<span style="display:inline-block; margin-left:6px; padding:1px 8px; border-radius:20px; background:#EEF1F4; color:#1F3B4D; font-size:11px; font-weight:700; letter-spacing:.3px; vertical-align:middle; font-size:12px;">{{ selected_entry.submitted_punch }}</span>{% endif %}</span>
@@ -555,6 +563,30 @@ function toggleAuditGroup(id){
   {% endif %}
 </div>
 {% include "salesapp/_history_card.html" with history=day_history title="Day Close History" %}
+<div class="card">
+  <h3>Collector History — {{ day_status.branch.name }} · {{ day_status.date }}</h3>
+  <p style="color:#8A8578; font-size:13px; margin-top:0;">Everything the collector did for all shifts of this day: cash counts, changes and approvals.</p>
+  {% if day_collector_history %}
+  <div style="overflow-x:auto;">
+  <table style="margin:0;">
+    <thead><tr><th>When</th><th>Shift</th><th>Who</th><th>Action</th><th>Details</th></tr></thead>
+    <tbody>
+      {% for h in day_collector_history %}
+      <tr>
+        <td style="white-space:nowrap;">{{ h.log.created_at|date:"Y-m-d H:i" }}</td>
+        <td style="white-space:nowrap;">{{ h.shift|default:"-" }}<br><span style="font-size:11px; color:#8A8578;">{{ h.log.description }}</span></td>
+        <td>{{ h.log.username_snapshot|default:"-" }}</td>
+        <td>{{ h.log.get_action_display }}</td>
+        <td style="font-size:12px; color:#8A8578; white-space:pre-line;">{{ h.log.clean_details|default:h.log.details|default:"-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div style="color:#8A8578; font-size:13px;">The collector has not recorded anything for this day yet.</div>
+  {% endif %}
+</div>
 {% endif %}
 
 {% include "salesapp/_history_card.html" with history=sales_history title="Sales History" %}

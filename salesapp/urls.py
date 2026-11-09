@@ -2,13 +2,22 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path('', views.entry_view, name='entry'),
+    path('', views.entry_gate, name='entry'),
     path('my-history/', views.waiter_history_view, name='waiter_history'),
     path('collector/', views.collector_view, name='collector'),
+    path('bank-deposits/', views.bank_deposits_view, name='bank_deposits'),
+    path('bank-deposits/new/', views.bank_deposit_form_view, name='bank_deposit_new'),
+    path('bank-deposits/cash/', views.bank_deposit_cash_view, name='bank_deposit_cash'),
+    path('bank-deposits/<int:deposit_id>/edit/', views.bank_deposit_form_view, name='bank_deposit_edit'),
     path('dashboard/', views.dashboard_view, name='dashboard'),
     path('reports/daily-sales/', views.daily_sales_report_view, name='daily_sales_report'),
     path('reports/daily-sales/excel/', views.daily_sales_report_xlsx_view, name='daily_sales_report_xlsx'),
     path('settings/cutoff/', views.audit_settings_view, name='audit_settings'),
+    path('settings/waiters/', views.waiter_users_view, name='waiter_users'),
+    path('settings/waiters/<int:user_id>/toggle-active/', views.waiter_toggle_active_view, name='waiter_toggle_active'),
+    path('settings/waiters/<int:user_id>/delete/', views.waiter_delete_view, name='waiter_delete'),
+    path('settings/waiters/<int:user_id>/reset-link/', views.waiter_reset_link_view, name='waiter_reset_link'),
+    path('reset-password/<str:token>/', views.waiter_reset_password_view, name='waiter_reset_password'),
     path('entry/business-date/', views.business_date_view, name='business_date'),
     path('cash-reconciliation/', views.cash_reconciliation_view, name='cash_reconciliation'),
     path('cash-reconciliation/action/', views.cash_reconcile_action_view, name='cash_reconcile_action'),

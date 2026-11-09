@@ -1,4 +1,4 @@
-{% load static %}
+{% load static %}{% load app_filters %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -189,6 +189,13 @@
         {% if user.profile.role == 'manager' %}Review{% else %}Audit{% endif %}
       </a>
     {% endif %}
+    {% if user.profile.role == 'collector' or user.profile.role == 'audit' or user.profile.role == 'manager' or user.profile.role == 'sales_manager' or user.profile.is_full_access %}
+      <a href="{% url 'bank_deposits' %}" class="{% if active_tab == 'bank_deposits' %}active{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-6 9 6"/><line x1="5" y1="10" x2="5" y2="19"/><line x1="10" y1="10" x2="10" y2="19"/><line x1="14" y1="10" x2="14" y2="19"/><line x1="19" y1="10" x2="19" y2="19"/><line x1="3" y1="21" x2="21" y2="21"/></svg>
+        Bank Deposits
+        {% if user.profile.role == 'collector' or user.profile.is_full_access %}{% returned_deposits_count as ret_n %}{% if ret_n %}<span style="margin-left:auto; background:#E0432E; color:#fff; font-size:11px; font-weight:700; padding:1px 8px; border-radius:20px;">{{ ret_n }}</span>{% endif %}{% endif %}
+      </a>
+    {% endif %}
     {% if user.profile.role == 'audit' or user.profile.role == 'manager' or user.profile.role == 'sales_manager' or user.profile.is_full_access %}
       <a href="{% url 'daily_sales_report' %}" class="{% if active_tab == 'daily_report' %}active{% endif %}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="8 15 11 12 13 14 16 10"/></svg>
@@ -203,6 +210,12 @@
     {% endif %}
     <div class="spacer"></div>
     <div class="bottom-links">
+      {% if user.profile.role == 'audit' %}
+        <a href="{% url 'waiter_users' %}" class="{% if active_tab == 'waiter_users' %}active{% endif %}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6"/><path d="M17 11l2 2 4-4"/></svg>
+          Waiter Users
+        </a>
+      {% endif %}
       {% if user.profile.role == 'audit' or user.profile.role == 'manager' %}
         <a href="{% url 'audit_settings' %}" class="{% if active_tab == 'audit_settings' %}active{% endif %}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
@@ -261,6 +274,64 @@ document.addEventListener('wheel', function(e){
 // Replace the browser's default "No file chosen" text on every file input
 // with a compact custom button + filename, site-wide. Callable again after
 // dynamically-added rows (e.g. "+ Add Machine") introduce new file inputs.
+// Uploads, site-wide:
+//  1. Photos are compressed right here, before the upload starts (longest side 1800 px, JPEG 82%) —
+//     receipts stay readable but a 5 MB phone photo becomes a few hundred KB, so uploading is fast.
+//  2. Whatever is still over 10 MB (e.g. a big PDF) is refused here, and the server enforces it too.
+(function(){
+  const MAX_MB = 10, MAX_SIDE = 1800, QUALITY = 0.82, SKIP_BELOW = 300 * 1024;
+
+  async function compress(file){
+    if(!file.type || file.type.indexOf('image/') !== 0 || file.type === 'image/gif' || file.type === 'image/svg+xml') return file;
+    if(file.size < SKIP_BELOW) return file;
+    try {
+      let bmp;
+      try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+      catch(e) { bmp = await createImageBitmap(file); }
+      const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+      const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);   // PNGs with transparency
+      ctx.drawImage(bmp, 0, 0, w, h);
+      if(bmp.close) bmp.close();
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', QUALITY));
+      if(!blob || blob.size >= file.size) return file;   // never make it bigger
+      return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg', lastModified: Date.now() });
+    } catch(e) { return file; }   // e.g. a format this browser cannot read: upload it as it is
+  }
+
+  document.addEventListener('change', function(e){
+    const input = e.target;
+    if(!input || input.type !== 'file' || !input.files || !input.files.length) return;
+    if(input.dataset.processed){ delete input.dataset.processed; return; }   // second pass: let the page handle it
+    e.stopImmediatePropagation();
+    const label = input.parentNode && input.parentNode.querySelector('button');
+    const oldText = label ? label.textContent : '';
+    if(label) label.textContent = 'Compressing…';
+    (async function(){
+      const files = [];
+      for(const f of Array.from(input.files)) files.push(await compress(f));
+      const big = files.filter(f => f.size > MAX_MB * 1024 * 1024);
+      if(big.length){
+        input.value = '';
+        alert('This file is too large: ' + big.map(f => f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)').join(', ') +
+              '\n\nThe maximum is ' + MAX_MB + ' MB per file. Please choose a smaller file, or take the photo at a lower quality.');
+      } else {
+        try {
+          const dt = new DataTransfer();
+          files.forEach(f => dt.items.add(f));
+          input.files = dt.files;
+        } catch(err) { /* keep the original choice */ }
+      }
+      if(label) label.textContent = oldText;
+      input.dataset.processed = '1';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    })();
+  }, true);
+})();
+
 window.enhanceFileInputs = function(){
   document.querySelectorAll('input[type="file"]').forEach(function(input){
     if(input.dataset.enhanced) return;

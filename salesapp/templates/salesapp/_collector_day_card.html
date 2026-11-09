@@ -1,7 +1,7 @@
 {% if collector_day %}
 <div class="card" id="collectorDayCard">
   <h3>Day Handover — {{ collector_day.branch.name }} · {{ collector_day.date }}</h3>
-  <p style="color:#6F6A5C; font-size:13px; margin:0 0 12px; line-height:1.6;">Check the shifts of the day, then{% if can_approve %} approve the handover of all of them at once, with the cash proof and a note{% else %} see whether the collector approved them{% endif %}. Nothing is changed by approving.
+  <p style="color:#6F6A5C; font-size:13px; margin:0 0 12px; line-height:1.6;">Check the shifts of the day, then{% if can_approve %} approve the handover of all of them at once, with a note{% else %} see whether the collector approved them{% endif %}. Nothing is changed by approving.
     This branch runs <b>{{ collector_day.shifts_per_day }}</b> shift{{ collector_day.shifts_per_day|pluralize }} a day.</p>
   <div style="overflow-x:auto;">
   <table style="margin:0;">
@@ -27,13 +27,11 @@
   <div class="total-strip" style="margin-top:12px;"><span>Day Cash (all shifts)</span><span>{{ collector_day.total_cash|floatformat:3 }} RO</span></div>
 
   {% if can_approve and collector_day.waiting %}
-  <form method="post" id="colApproveAllForm" enctype="multipart/form-data" style="margin-top:14px; background:#F5F3EC; border:1px solid #E7E4DB; border-radius:10px; padding:14px;">
+  <form method="post" id="colApproveAllForm" style="margin-top:14px; background:#F5F3EC; border:1px solid #E7E4DB; border-radius:10px; padding:14px;">
     {% csrf_token %}
     <input type="hidden" name="action" value="collector_approve_all">
     <input type="hidden" name="shift_entry_id" value="{{ selected_entry.id }}">
-    <label>Cash Proof (photo of the cash invoice) {% if collector_day.needs_proof %}<span style="color:#B94A3F;">*</span>{% endif %}</label>
-    <input type="file" name="proof_attachment" accept="image/*,.pdf" {% if collector_day.needs_proof %}required{% endif %}>
-    <label style="margin-top:10px;">Note (optional)</label>
+    <label>Note (optional)</label>
     <textarea name="approve_note" id="colApproveNote" rows="2" placeholder="Saved with every shift approved here..." style="max-width:100%;"></textarea>
     <button type="button" class="btn" id="colApproveAllBtn" style="margin-top:10px;">Approve Handover ({{ collector_day.waiting|length }})</button>
     <div style="font-size:12px; color:#6F6A5C; margin-top:6px;">Approving saves every waiting shift as collected, with the waiter's cash counts as they are now, and sends it to Audit. A shift you already counted keeps your count.</div>

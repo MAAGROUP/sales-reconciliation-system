@@ -34,25 +34,6 @@
   {% if is_viewer %}<div style="margin-top:10px; background:#FDF1E3; color:#8A5410; border:1px solid #F0D9B5; border-radius:8px; padding:8px 12px; font-size:13px; font-weight:600;">View only — changes are disabled for your role.</div>{% endif %}
 </div>
 
-<div class="card" id="tryCard">
-  <h3>Test it</h3>
-  <p style="color:#6F6A5C; font-size:13px; margin:0 0 12px;">Pick a branch and a day and time, and see which date a report submitted then would get. It uses the opening and closing times <b>typed in the table below</b> — even before you save — so you can try a change first.</p>
-  <div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));">
-    <div><label>Branch</label>
-      <select id="tryBranch">
-        {% for g in brand_groups %}{% for b in g.branches %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}{% endfor %}
-      </select>
-    </div>
-    <div><label>Day</label><input type="date" id="tryDate" value="{{ now|date:'Y-m-d' }}"></div>
-    <div><label>Time</label><input type="text" id="tryTime" class="co-t" style="width:100%;" value="{{ now|date:'g:i A' }}" placeholder="6:00 AM" autocomplete="off"></div>
-  </div>
-  <div id="tryResult" style="margin-top:14px; border-radius:12px; padding:14px 16px; background:#F7F5EE; font-size:13px; color:#3D3A31; line-height:1.7;"></div>
-  <details style="margin-top:10px;">
-    <summary style="cursor:pointer; font-size:13px; color:#1F3B4D; font-weight:600;">Show the whole day, hour by hour</summary>
-    <div style="overflow-x:auto; margin-top:8px;"><table id="tryTable" style="margin:0; max-width:520px;"></table></div>
-  </details>
-</div>
-
 <form method="post" id="coForm">
   {% csrf_token %}
   <div class="card">
@@ -145,7 +126,6 @@
     const note = document.getElementById('coChanged');
     note.textContent = (changed ? changed + ' unsaved change' + (changed > 1 ? 's' : '') : '') + (invalid ? (changed ? ' · ' : '') + invalid + ' to fix' : '');
     note.style.color = invalid ? '#B94A3F' : '#1F8A5C';
-    if (typeof tryRefresh === 'function') tryRefresh();     // keep the test card in step with what is typed
   }
 
   // tidy a box when you leave it (10 -> 10:00, 1000 -> 10:00, 3 -> 03:00, 10 pm -> 22:00); flag it if it is not a time
@@ -202,56 +182,6 @@
     saving = true;
   });
   window.addEventListener('beforeunload', e => { if (!saving && form.querySelector('.co-row.changed')) { e.preventDefault(); e.returnValue = ''; } });
-  // ---- "Test it": which date would a report get at a chosen day and time? (uses the times typed in the table, saved or not) ----
-  const trySel = document.getElementById('tryBranch'), tryDate = document.getElementById('tryDate'), tryTime = document.getElementById('tryTime');
-  const tryOut = document.getElementById('tryResult'), tryTbl = document.getElementById('tryTable');
-  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const utcDay = iso => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); };
-  const addDays = (dt, n) => new Date(dt.getTime() + n * 86400000);
-  const dayLabel = dt => DAYS[dt.getUTCDay()] + ' ' + dt.getUTCDate() + ' ' + MONS[dt.getUTCMonth()] + ' ' + dt.getUTCFullYear();
-  // the same rule the server uses: a report belongs to the most recent day that has STARTED
-  function judge(sMin, eMin, tMin, dayIso){
-    const day = utcDay(dayIso);
-    const open = sMin <= eMin ? (tMin >= sMin && tMin <= eMin) : (tMin >= sMin || tMin <= eMin);
-    let reportDay;
-    if (open) reportDay = (sMin <= eMin || tMin >= sMin) ? day : addDays(day, -1);      // the day that is running
-    else reportDay = (sMin <= eMin && tMin > eMin) ? addDays(day, 1) : day;             // closed: the NEXT day (about to open)
-    const nextStart = tMin < sMin ? day : addDays(day, 1);                              // when the next opening happens
-    return { reportDay, open, late: !open, nextStart };
-  }
-  function tryRow(){ return rows.find(r => S(r).name === 'start_' + trySel.value); }
-  function tryRefresh(){
-    const row = tryRow(); if (!row || !tryDate.value) { tryOut.textContent = 'Pick a branch and a day.'; return; }
-    const s = parse(S(row).value), e = parse(E(row).value), t = parse(tryTime.value);
-    if (s === null || e === null || s === e) { tryOut.innerHTML = '<b style="color:#B94A3F;">Fix this branch\'s opening and closing times in the table first.</b>'; tryTbl.innerHTML = ''; return; }
-    if (t === null) { tryOut.innerHTML = '<b style="color:#B94A3F;">Type the time like 6 am or 10:30 pm.</b>'; return; }
-    const sM = mins(s), eM = mins(e), tM = mins(t), v = judge(sM, eM, tM, tryDate.value), day = utcDay(tryDate.value);
-    const hours = fmt12(s) + ' → ' + fmt12(e) + (eM < sM ? ' (next day)' : '');
-    const unsaved = (s !== row.dataset.origStart || e !== row.dataset.origEnd) ? ' <span style="color:#1F8A5C; font-weight:700;">(using the unsaved times)</span>' : '';
-    let why;
-    if (v.open && tM <= eM && sM > eM && tM < sM) why = 'It is after midnight, but the day that started ' + dayLabel(v.reportDay) + ' is still running until ' + fmt12(e) + '.';
-    else if (v.open) why = 'The shop is open, so the report counts for the day that started ' + dayLabel(v.reportDay) + '.';
-    else why = '<b style="color:#8A5410;">The shop is closed — this is a LATE submission.</b> The waiter is asked to confirm, and the report counts as the <b>next day</b> (' + dayLabel(v.reportDay) + '), which opens at ' + fmt12(s) + '.';
-    tryOut.innerHTML = '<div style="font-size:16px;">A report submitted <b>' + dayLabel(day) + ' at ' + fmt12(t) + '</b> gets the date <b style="color:#1F3B4D; font-size:18px;">' + dayLabel(v.reportDay) + '</b></div>'
-      + '<div>' + why + '</div>'
-      + '<div style="color:#8A8578;">Hours: ' + hours + unsaved + ' · Next day starts: <b>' + dayLabel(v.nextStart) + ' at ' + fmt12(s) + '</b></div>';
-    // the whole day, hour by hour (+ the moments around opening and closing)
-    const marks = new Set(); for (let h = 0; h < 24; h++) marks.add(h * 60);
-    [sM - 1, sM, eM, eM + 1].forEach(m => marks.add(((m % 1440) + 1440) % 1440));
-    const ordered = [...marks].sort((a, b) => a - b);
-    tryTbl.innerHTML = '<thead><tr><th>Time submitted</th><th>Report date</th><th>Shop</th></tr></thead><tbody>' + ordered.map(m => {
-      const j = judge(sM, eM, m, tryDate.value);
-      const note = m === sM ? ' ◄ opens' : m === eM ? ' ◄ closes' : m === ((sM - 1 + 1440) % 1440) ? ' ◄ 1 min before opening' : m === ((eM + 1) % 1440) ? ' ◄ 1 min after closing' : '';
-      const chosen = m === tM ? ' style="background:#FFF6D6;"' : '';
-      return '<tr' + chosen + '><td>' + fmt12(hhmm(m)) + note + '</td><td><b>' + dayLabel(j.reportDay) + '</b></td><td>' + (j.open ? '<span class="badge ok">open</span>' : '<span class="badge flag" style="background:#FDF1E3; color:#8A5410;">closed — late</span>') + '</td></tr>';
-    }).join('') + '</tbody>';
-  }
-  const hhmm = m => pad(Math.floor(m / 60)) + ':' + pad(m % 60);
-  [trySel, tryDate].forEach(el => el.addEventListener('input', tryRefresh));
-  tryTime.addEventListener('input', tryRefresh);
-  tryTime.addEventListener('blur', () => { const ok = parse(tryTime.value); if (ok !== null) tryTime.value = fmt12(ok); tryRefresh(); });
-  tryTime.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); tryTime.blur(); } });
-  window.tryCutoff = tryRefresh;           // (also handy for testing)
 
   refresh();
 })();

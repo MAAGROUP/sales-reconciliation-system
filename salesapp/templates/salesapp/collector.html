@@ -38,6 +38,64 @@
     <button type="submit" class="btn small">Apply</button>
   </form>
 
+  {% if can_approve %}
+  <form method="post" id="hoForm" style="display:none;">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="collector_approve_day">
+    {% for k, v in filter_pairs %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+    <input type="hidden" name="ho_branch" id="hoBranch" value="">
+    <input type="hidden" name="ho_date" id="hoDate" value="">
+  </form>
+  <div id="hoModal" style="position:fixed; inset:0; z-index:1000; background:rgba(28,25,23,.55); display:none; align-items:center; justify-content:center; padding:20px;">
+    <div style="background:#fff; border-radius:18px; max-width:440px; width:100%; padding:26px 26px 22px; box-shadow:0 18px 50px rgba(0,0,0,.25);">
+      <h3 style="margin:0 0 12px; font-size:19px; color:#1F3B4D;">Approve Handover?</h3>
+      <div style="background:#F5F3EC; border-radius:10px; padding:10px 14px; margin:0 0 12px; font-size:14px; color:#1F3B4D;"><b id="hoName"></b><br><span id="hoCount"></span> shift(s) · <span id="hoCash"></span> RO</div>
+      <p style="margin:0 0 10px; font-size:14px; line-height:1.6; color:#3D3A31;">These shifts are saved as collected, with the waiter's cash as it is, and move on to Audit.</p>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:18px;">
+        <button type="button" class="btn secondary" id="hoCancel">Cancel</button>
+        <button type="button" class="btn" id="hoOk">Approve</button>
+      </div>
+    </div>
+  </div>
+  <script>
+  (function(){
+    const m = document.getElementById('hoModal'), f = document.getElementById('hoForm');
+    const cancel = document.getElementById('hoCancel'), ok = document.getElementById('hoOk');
+    let last = null;
+    // one listener for the whole page: the Approve buttons are drawn further down, after this script
+    document.addEventListener('click', function(e){
+      const btn = e.target.closest('.ho-open');
+      if(!btn) return;
+      e.stopPropagation();
+      last = btn;
+      document.getElementById('hoBranch').value = btn.dataset.branch;
+      document.getElementById('hoDate').value = btn.dataset.date;
+      document.getElementById('hoName').textContent = btn.dataset.branch + ' · ' + btn.dataset.label;
+      document.getElementById('hoCount').textContent = btn.dataset.count;
+      document.getElementById('hoCash').textContent = btn.dataset.cash;
+      m.style.display = 'flex'; cancel.focus();
+    });
+    const hide = () => { m.style.display = 'none'; if(last) last.focus(); };
+    cancel.addEventListener('click', hide);
+    m.addEventListener('click', e => { if(e.target === m) hide(); });
+    document.addEventListener('keydown', e => { if(e.key === 'Escape' && m.style.display === 'flex') hide(); });
+    ok.addEventListener('click', () => {
+      ok.disabled = true;
+      // remember what is open, so the page comes back the same way and the next date can be approved right away
+      try {
+        const open = [];
+        document.querySelectorAll('.branch-item').forEach(it => {
+          const body = it.querySelector('[id^="branch-group-"]');
+          if(body && body.style.display === 'block') open.push(it.querySelector('strong').textContent.trim());
+        });
+        sessionStorage.setItem('colRestore', JSON.stringify({open: open, y: window.scrollY, branches: branchStepIndex, dates: dateStepIndex}));
+      } catch(e) {}
+      f.submit();
+    });
+  })();
+  </script>
+  {% endif %}
+
   {% if group_summary %}
   <div class="card" style="background:#F0EEE7; margin-top:16px; margin-bottom:0;">
     <h3>Group Summary — {{ branch_filter }}
@@ -74,6 +132,10 @@
             <div style="display:flex; align-items:center; gap:10px;">
               <div style="flex:1; border-top:3px solid #F0EEE7;"></div>
               <strong style="font-size:12px; color:#1F3B4D; white-space:nowrap;">{{ e.date }}</strong>
+              <span style="font-size:12px; color:#1F3B4D; white-space:nowrap;">Total <strong>{{ e.day.total|floatformat:3 }}</strong></span>
+              <span style="font-size:12px; color:#1F3B4D; white-space:nowrap;">Variance {% if e.day.counted %}<strong {% if e.day.variance %}style="color:#B94A3F;"{% endif %}>{{ e.day.variance|floatformat:3 }}</strong>{% else %}<strong>—</strong>{% endif %}</span>
+              {% if e.day.pending %}{% if can_approve %}<button type="button" class="btn small ho-open" data-branch="{{ group.branch.name }}" data-date="{{ e.date|date:'Y-m-d' }}" data-label="{{ e.date|date:'d M Y' }}" data-count="{{ e.day.pending }}" data-cash="{{ e.day.total|floatformat:3 }}">Approve</button>{% endif %}
+              {% else %}<span class="badge ok">Approved</span>{% endif %}
             </div>
           </td>
         </tr>
@@ -185,6 +247,20 @@ document.addEventListener('DOMContentLoaded', function(){
 </script>
 
 <script>
+// after "Approve" the page reloads: open the same branches again, at the same place
+document.addEventListener('DOMContentLoaded', function(){
+  let st = null;
+  try { st = JSON.parse(sessionStorage.getItem('colRestore') || 'null'); sessionStorage.removeItem('colRestore'); } catch(e) {}
+  if(!st) return;
+  if(typeof st.branches === 'number'){ branchStepIndex = st.branches; updateBranchVisibility(); }
+  Object.keys(st.dates || {}).forEach(k => { dateStepIndex[k] = st.dates[k]; updateDateVisibility(k); });
+  document.querySelectorAll('.branch-item').forEach(it => {
+    const name = it.querySelector('strong').textContent.trim();
+    const body = it.querySelector('[id^="branch-group-"]');
+    if(body && st.open.indexOf(name) !== -1 && body.style.display !== 'block') toggleBranchGroup(body.id);
+  });
+  window.scrollTo(0, st.y || 0);
+});
 function toggleBranchGroup(id){
   const el = document.getElementById(id);
   const arrow = document.getElementById('arrow-' + id);
@@ -359,10 +435,14 @@ function toggleBranchGroup(id){
       <label>Notes</label>
       <textarea name="notes" rows="4" style="max-width:100%;" placeholder="Anything audit should know about this cash...">{{ selected_handover.notes|default:'' }}</textarea>
     </div>
-    <div style="margin-top:12px;"><label>Attach Photo / PDF of the invoice {% if not selected_handover.proof_attachment and not is_viewer %}<span style="color:#C0392B;">*</span>{% endif %}</label>
+    {% if request.user.profile.role != 'collector' %}
+    <div style="margin-top:12px;"><label>Attach Photo / PDF of the invoice (optional)</label>
       {% if selected_handover.proof_attachment %}<div style="margin-bottom:6px;"><a href="{{ selected_handover.proof_attachment.url }}" target="_blank" style="font-size:13px; color:#3B6FE0;">📎 View attachment</a></div>{% endif %}
-      {% if not is_viewer %}<input type="file" name="proof_attachment" accept="image/*,.pdf" {% if not selected_handover.proof_attachment and request.user.profile.role == 'collector' %}required{% endif %} style="max-width:100%;">{% elif not selected_handover.proof_attachment %}<div style="font-size:13px; color:#8A8578;">Not uploaded yet</div>{% endif %}
+      {% if not is_viewer %}<input type="file" name="proof_attachment" accept="image/*,.pdf" style="max-width:100%;">{% elif not selected_handover.proof_attachment %}<div style="font-size:13px; color:#8A8578;">Not uploaded yet</div>{% endif %}
     </div>
+    {% elif selected_handover.proof_attachment %}
+    <div style="margin-top:12px;"><label>Invoice attachment</label><a href="{{ selected_handover.proof_attachment.url }}" target="_blank" style="font-size:13px; color:#3B6FE0;">📎 View attachment</a></div>
+    {% endif %}
     {% if not is_viewer %}<button type="submit" class="btn" style="margin-top:14px;">Save Collector Handover</button>{% endif %}
     <a href="{% if next_url %}{{ next_url }}{% else %}{% url 'collector' %}?{% for s in shift_filter %}shift_filter={{ s }}&{% endfor %}{{ branch_qs|safe }}{{ collected_qs|safe }}{% if date_from %}date_from={{ date_from }}&{% endif %}{% if date_to %}date_to={{ date_to }}{% endif %}{% endif %}" class="btn secondary" style="margin-top:14px; margin-left:8px; text-decoration:none; display:inline-block;">Back</a>
   </div>

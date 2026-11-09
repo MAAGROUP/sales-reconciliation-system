@@ -1,4 +1,6 @@
 import re
+import secrets
+import hashlib
 import unicodedata
 import csv
 import datetime
@@ -9,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render, redirect, get_object_or_404
@@ -17,14 +20,14 @@ from django.core.cache import cache
 from django.template.defaultfilters import date as date_filter
 from django.views.decorators.cache import never_cache
 from django.core.exceptions import PermissionDenied
-from django.db.models import Sum, Q
+from django.db.models import Sum, Q, Count
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 
 from django.views.decorators.http import require_POST
 from .constants import DENOMS, AED_DENOMS, DELIVERY_SOURCES, SHIFT_CHOICES
 from .decorators import role_required
-from .models import Branch, ShiftEntry, CollectorHandover, UserProfile, VisaMachineFile, NotesFile, ActivityLog, DayClose, _fmt12
+from .models import Branch, ShiftEntry, CollectorHandover, UserProfile, VisaMachineFile, NotesFile, ActivityLog, DayClose, BankDeposit, BankDepositFile, BankDepositEvent, WaiterResetLink, _fmt12
 
 
 def login_view(request):
@@ -689,6 +692,16 @@ def log_activity(request, action, description='', user=None, username_override=N
     )
 
 
+@login_required
+def entry_gate(request):
+    """The home address '/': Waiter Entry for waiters (and Admin/IT). Anyone else is sent to the
+    page of their own role, instead of meeting a 403 page."""
+    profile = getattr(request.user, 'profile', None)
+    if profile is not None and not (profile.role == 'waiter' or profile.is_full_access):
+        return _redirect_for_role(request.user)
+    return entry_view(request)
+
+
 @role_required('waiter', 'admin')
 def entry_view(request):
     profile = request.user.profile
@@ -736,7 +749,10 @@ def entry_view(request):
         if DayClose.objects.filter(branch=branch, date=date).exists():
             request_reason = 'Day already closed'
         elif ShiftEntry.objects.filter(branch=branch, date=date, shift=shift, is_archived=False).exists():
-            request_reason = 'Shift already submitted'
+            # The same shift twice (an old page left open, a double click, a second device) is
+            # refused outright; only a closed day goes to Audit as a request.
+            messages.error(request, f'Shift {shift} for {date} was already submitted, so it was not sent again. Refresh the page.')
+            return redirect('entry')
         if request_reason and ShiftEntry.objects.filter(branch=branch, date=date, shift=shift, request_status='pending').exists():
             messages.error(request, f'A request for shift {shift} on {date} is already waiting for Audit. Please wait for their decision.')
             return redirect('entry')
@@ -859,18 +875,57 @@ def _collector_day_rows(entry):
     waiting = [r['entry'] for r in rows if r['state'] == 'waiting']
     return {'branch': branch, 'date': entry.date, 'rows': rows, 'waiting': waiting,
             'shifts_per_day': len(wanted),
-            'needs_proof': any(r['state'] == 'waiting' and not r['counted'] for r in rows),
             'total_cash': sum((e.final_cash_total for e in entries), Decimal('0')),
             'approved_n': sum(1 for r in rows if r['state'] == 'approved')}
 
 
+def _can_collect(profile):
+    return profile.role == 'collector' or profile.is_full_access
+
+
+def _can_reconcile(profile):
+    return profile.role == 'audit' or profile.is_full_access
+
+
+def _collector_approve_entries(request, targets, note):
+    """Approve Handover for these shifts: every shift with no collector count yet is saved as
+    collected, with the waiter's cash counts as they are (the collector confirms they are
+    correct). A shift he already counted keeps his own count and is just marked approved.
+    Each shift then moves on to Audit's cash reconciliation. Returns (saved_new, kept_own)."""
+    name = (request.user.get_full_name() or request.user.username)
+    now = timezone.now()
+    saved_new, kept_own = [], []
+    for e in targets:
+        h = getattr(e, 'collector', None)
+        if h is None:
+            h = CollectorHandover(shift_entry=e, collector_name=name, cash_counts=dict(e.cash_counts),
+                                  cash_counts_aed=dict(e.cash_counts_aed), notes=note)
+            h.save()
+            e = h.shift_entry
+            details = (f'Approved by the collector ("Approve Handover"): {Decimal(str(h.cash_total)):.3f} RO, '
+                       "same as the waiter's count")
+            if note:
+                details += f'\nNote: "{note}"'
+            log_activity(request, 'handover_saved', description=e.reference_id, details=details)
+            saved_new.append(e)
+        else:
+            details = 'Approved by the collector ("Approve Handover"); his own count kept'
+            if note:
+                details += f'\nNote: "{note}"'
+            log_activity(request, 'collector_approved', description=e.reference_id, details=details)
+            kept_own.append(e)
+        e.collector_approved = True
+        e.collector_approved_at = now
+        e.collector_approved_by = request.user
+        if note:
+            e.collector_note = note
+        e.save(update_fields=['collector_approved', 'collector_approved_at', 'collector_approved_by', 'collector_note'])
+    return saved_new, kept_own
+
+
 def _collector_approve(request):
-    """'Approve all shifts' on the collector's day card = Save Handover for the whole day: every
-    shift of the day that has no collector count yet is saved as collected, with the waiter's
-    cash counts as they are (the collector confirms they are correct), the one cash-proof photo
-    and the note. A shift he already counted himself keeps his own count and is just marked
-    approved. Each shift then moves on to Audit's cash reconciliation."""
-    if request.user.profile.role not in ('collector', 'admin'):
+    """'Approve Handover' on the collector's day card: all shifts of the opened shift's day."""
+    if not _can_collect(request.user.profile):
         raise PermissionDenied('Only the collector can approve shifts here.')
     entry = get_object_or_404(ShiftEntry, id=request.POST.get('shift_entry_id'), is_archived=False)
     back = redirect(_safe_next(request) or _reopen_url(request, '/collector/', entry.id))
@@ -881,50 +936,62 @@ def _collector_approve(request):
     if not targets:
         messages.info(request, 'Nothing to approve: every shift of this day is already approved.')
         return back
-    needs_count = [e for e in targets if getattr(e, 'collector', None) is None]
-    proof = request.FILES.get('proof_attachment')
-    proof_bytes = None
-    if proof:
-        ext = proof.name.rsplit('.', 1)[-1].lower() if '.' in proof.name else ''
-        if ext not in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'pdf') or proof.size > 10 * 1024 * 1024:
-            messages.error(request, 'Cash proof must be a photo (JPG/PNG/WEBP/HEIC) or PDF, up to 10 MB.')
-            return back
-        proof_bytes = proof.read()
-    elif needs_count:
-        messages.error(request, 'Please attach the photo of the cash invoice (Cash Proof) before approving.')
-        return back
-    from django.core.files.base import ContentFile
-    name = (request.user.get_full_name() or request.user.username)
-    now = timezone.now()
-    done_new, done_old = [], []
-    for e in targets:
-        h = getattr(e, 'collector', None)
-        if h is None:
-            h = CollectorHandover(shift_entry=e, collector_name=name, cash_counts=dict(e.cash_counts),
-                                  cash_counts_aed=dict(e.cash_counts_aed), notes=note)
-            h.proof_attachment.save(proof.name, ContentFile(proof_bytes), save=False)
-            h.save()
-            e = h.shift_entry
-            total = f'{Decimal(str(h.cash_total)):.3f}'
-            details = f'Approved by the collector ("Approve Handover"): {total} RO, same as the waiter\'s count'
-            if note:
-                details += f'\nNote: "{note}"'
-            log_activity(request, 'handover_saved', description=e.reference_id, details=details + '\nCash proof photo attached')
-            done_new.append(e)
-        else:
-            details = 'Approved by the collector ("Approve Handover"); his own count kept'
-            if note:
-                details += f'\nNote: "{note}"'
-            log_activity(request, 'collector_approved', description=e.reference_id, details=details)
-            done_old.append(e)
-        e.collector_approved = True
-        e.collector_approved_at = now
-        e.collector_approved_by = request.user
-        if note:
-            e.collector_note = note
-        e.save(update_fields=['collector_approved', 'collector_approved_at', 'collector_approved_by', 'collector_note'])
-    refs = ', '.join(e.reference_id for e in done_new + done_old)
+    saved_new, kept_own = _collector_approve_entries(request, targets, note)
+    refs = ', '.join(e.reference_id for e in saved_new + kept_own)
     messages.success(request, f'Approved {len(targets)} shift(s) and saved as collected: {refs}.')
+    return back
+
+
+# ----- Collector Handover list: one button for every shift the filters show -----
+
+def _collector_qs_from(src):
+    """The shifts the Collector Handover list shows for these filters (GET or POST fields)."""
+    qs = ShiftEntry.objects.select_related('branch', 'collector').filter(is_archived=False)
+    shifts = src.getlist('shift_filter')
+    if shifts:
+        qs = qs.filter(shift__in=shifts)
+    qs = _apply_branch_filter(qs, [v.strip() for v in src.getlist('branch_filter') if v.strip()])
+    if src.get('date_from', '').strip():
+        qs = qs.filter(date__gte=src['date_from'].strip())
+    if src.get('date_to', '').strip():
+        qs = qs.filter(date__lte=src['date_to'].strip())
+    if src.get('search_ref', '').strip():
+        qs = qs.filter(reference_id__icontains=src['search_ref'].strip())
+    valid = {v for v, _ in COLLECTED_OPTIONS}
+    qs = _apply_collected(qs, [v for v in src.getlist('collected') if v in valid])
+    return qs.order_by('date', 'branch__name', 'shift')
+
+
+def _filter_pairs(src):
+    """The active filters as (name, value) pairs: hidden fields for the approve form, and the way back."""
+    pairs = [(k, v) for k in ('shift_filter', 'branch_filter', 'collected') for v in src.getlist(k) if v.strip()]
+    pairs += [(k, src[k].strip()) for k in ('date_from', 'date_to', 'search_ref') if src.get(k, '').strip()]
+    return pairs
+
+
+def _collector_day_approve(request):
+    """'Approve' on the date line of a branch: every shift of that branch on that date. The
+    collector sees the day's total from outside; when the cash matches he approves it directly,
+    otherwise he opens the shift and saves his own count. The page filters are kept."""
+    if not _can_collect(request.user.profile):
+        raise PermissionDenied('Only the collector can approve shifts here.')
+    back = redirect('/collector/?' + urlencode(_filter_pairs(request.POST)))
+    from django.http import QueryDict
+    target = QueryDict(mutable=True)
+    target.setlist('branch_filter', [request.POST.get('ho_branch', '')])
+    target['date_from'] = target['date_to'] = request.POST.get('ho_date', '')
+    try:
+        datetime.date.fromisoformat(target['date_from'])
+    except ValueError:
+        messages.error(request, 'Unknown date.')
+        return back
+    targets = [e for e in _collector_qs_from(target)
+               if not e.collector_approved or getattr(e, 'collector', None) is None]
+    if not targets:
+        messages.info(request, 'Nothing to approve: this day is already approved.')
+        return back
+    _collector_approve_entries(request, targets, '')
+    messages.success(request, f'{request.POST.get("ho_branch")} · {request.POST.get("ho_date")}: approved {len(targets)} shift(s).')
     return back
 
 
@@ -936,6 +1003,8 @@ def collector_view(request):
             raise PermissionDenied('This account can only view the collector page.')
         if request.POST.get('action') == 'collector_approve_all':
             return _collector_approve(request)
+        if request.POST.get('action') == 'collector_approve_day':
+            return _collector_day_approve(request)
         entry_id = request.POST.get('shift_entry_id')
         shift_entry = get_object_or_404(ShiftEntry, id=entry_id)
 
@@ -957,9 +1026,6 @@ def collector_view(request):
             if ext not in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'pdf') or proof.size > 10 * 1024 * 1024:
                 messages.error(request, 'Cash proof must be a photo (JPG/PNG/WEBP/HEIC) or PDF, up to 10 MB.')
                 return redirect(_safe_next(request) or _reopen_url(request, '/collector/', entry_id))
-        elif request.user.profile.role == 'collector' and not (handover and handover.proof_attachment):
-            messages.error(request, 'Please attach the photo of the cash invoice (Cash Proof) before saving.')
-            return redirect(_safe_next(request) or _reopen_url(request, '/collector/', entry_id))
         if is_new:
             handover = CollectorHandover(shift_entry=shift_entry)
         before_snap = _handover_snapshot(handover)
@@ -1110,6 +1176,22 @@ def collector_view(request):
             e.date_group = date_group
             previous_date = e.date
         group['date_group_count'] = date_group + 1
+        # The line of each date: that day's cash total for this branch, the variance of the shifts the
+        # collector has counted, and how many shifts still wait for his Approve.
+        days = {}
+        for e in group['entries']:
+            d = days.setdefault(e.date, {'total': Decimal('0'), 'variance': Decimal('0'), 'counted': 0, 'pending': 0, 'shifts': 0})
+            h = getattr(e, 'collector', None)
+            d['shifts'] += 1
+            d['total'] += Decimal(str(e.cash_total or 0))
+            if h is not None:
+                d['variance'] += Decimal(str(h.diff_from_waiter or 0))
+                d['counted'] += 1
+            if h is None or not e.collector_approved:
+                d['pending'] += 1
+        for e in group['entries']:
+            if e.show_date_divider:
+                e.day = days[e.date]
 
     cash_subtotals = _cash_subtotals(entry_denoms, entry_aed_denoms)
     collector_day = _collector_day_rows(selected_entry) if selected_entry and not selected_entry.is_archived else None
@@ -1117,7 +1199,8 @@ def collector_view(request):
     context = {
         **cash_subtotals,
         'collector_day': collector_day,
-        'can_approve': request.user.profile.role in ('collector', 'admin'),
+        'can_approve': _can_collect(request.user.profile),
+        'filter_pairs': _filter_pairs(request.GET),
         'all_entries': all_entries_qs,
         'branch_groups': branch_groups,
         'shift_filter': shift_filter,
@@ -1332,6 +1415,7 @@ def dashboard_view(request):
         )
 
     day_status = day_history = None
+    day_collector_history = []
     day_flagged = False
     if selected_entry:
         day_status = _day_status(selected_entry.branch, selected_entry.date)
@@ -1340,6 +1424,15 @@ def dashboard_view(request):
         ).order_by('-created_at'))
         if day_status['day'] is not None:
             day_flagged = abs(day_status['day'].variance) > threshold
+        # Everything the collector did on this branch + date, across all its shifts.
+        day_shifts = {e.reference_id: e.get_shift_display() for e in
+                      ShiftEntry.objects.filter(branch=selected_entry.branch, date=selected_entry.date)}
+        day_collector_history = [
+            {'log': log, 'shift': day_shifts.get(log.description, '')}
+            for log in ActivityLog.objects.filter(
+                description__in=list(day_shifts), action__in=['handover_saved', 'collector_approved'],
+            ).order_by('-created_at')
+        ]
 
     qs = ShiftEntry.objects.select_related('branch', 'collector').filter(is_archived=False)
 
@@ -1417,6 +1510,7 @@ def dashboard_view(request):
         'review_log': review_log,
         'variance_threshold': threshold,
         'day_status': day_status,
+        'day_collector_history': day_collector_history,
         'day_history': day_history,
         'day_flagged': day_flagged,
         'pending_requests': list(ShiftEntry.objects.select_related('branch').filter(request_status='pending').order_by('created_at')),
@@ -2738,3 +2832,353 @@ def cash_reconcile_action_view(request):
         messages.error(request, 'Unknown action.')
 
     return redirect(request.META.get('HTTP_REFERER') or 'cash_reconciliation')
+
+
+
+# ───────────────────────── Bank Deposits (weekly cash deposit receipts) ─────────────────────────
+
+def _deposit_cash(date_from, date_to, excluded_ids=()):
+    """The cash the collector approved for shifts dated date_from..date_to, for every branch
+    except the excluded ones. Returns (total, shift count, branch count)."""
+    total, shifts, per = _deposit_cash_by_branch(date_from, date_to, excluded_ids)
+    return total, shifts, len(per)
+
+
+def _deposit_cash_by_branch(date_from, date_to, excluded_ids=()):
+    """Same figures, plus the split per branch: (total, shifts, [{id, name, cash, shifts}, ...])."""
+    qs = ShiftEntry.objects.filter(date__gte=date_from, date__lte=date_to, is_archived=False,
+                                   collector_approved=True, collector__isnull=False)
+    if excluded_ids:
+        qs = qs.exclude(branch_id__in=list(excluded_ids))
+    per = [{'id': r['branch'], 'name': r['branch__name'], 'cash': r['c'] or Decimal('0'), 'shifts': r['n']}
+           for r in qs.values('branch', 'branch__name').annotate(c=Sum('collector__cash_total'), n=Count('id')).order_by('branch__name')]
+    return sum((p['cash'] for p in per), Decimal('0')), sum(p['shifts'] for p in per), per
+
+
+def _excluded_ids(dep):
+    return {b.id for b in dep.excluded_branches.all()}
+
+
+def _deposit_overlaps(dep):
+    """Other deposits (not sent back) that share at least one day AND at least one branch
+    with this deposit. Two deposits of different branches never overlap."""
+    out = []
+    all_ids = set(Branch.objects.values_list('id', flat=True))
+    mine = all_ids - _excluded_ids(dep)
+    for o in BankDeposit.objects.filter(returned=False, date_from__lte=dep.date_to, date_to__gte=dep.date_from).exclude(pk=dep.pk).prefetch_related('excluded_branches'):
+        common = mine - _excluded_ids(o)
+        if not common:
+            continue
+        a, b = max(o.date_from, dep.date_from), min(o.date_to, dep.date_to)
+        out.append({'other': o, 'from': a, 'to': b, 'common': len(common), 'of': len(mine)})
+    return out
+
+
+def _fmt_overlap(o):
+    f = lambda d: d.strftime('%d %b')
+    days = f(o['from']) if o['from'] == o['to'] else f'{f(o["from"])} – {f(o["to"])}'
+    return f'{o["other"].date_from.strftime("%d %b")} – {o["other"].date_to.strftime("%d %b %Y")} (shared days: {days}; {o["common"]} branch(es) in common)'
+
+
+def _deposit_rows(deposits):
+    rows = []
+    all_branch_names = list(Branch.objects.values_list('id', 'name'))
+    for d in deposits:
+        excluded = list(d.excluded_branches.all())
+        cash, shifts, per = _deposit_cash_by_branch(d.date_from, d.date_to, [b.id for b in excluded])
+        diff = d.amount - cash
+        ov = [] if d.returned else _deposit_overlaps(d)
+        ex_names = sorted(b.name for b in excluded)
+        only = []
+        if len(ex_names) > 4:      # most branches left out: say who IS in, it is shorter
+            ex_ids = {b.id for b in excluded}
+            only = [n for i, n in all_branch_names if i not in ex_ids]
+        rows.append({'d': d, 'overlaps': ov, 'overlap_text': '; '.join(_fmt_overlap(o) for o in ov), 'cash': cash, 'shifts': shifts,
+                     'branches': len(per), 'per_branch': per, 'excluded': [] if only else ex_names, 'only': only, 'diff': diff,
+                     'has_diff': abs(diff) > CASH_TOLERANCE, 'files': list(d.files.all()), 'events': list(d.events.all())})
+    return rows
+
+
+def _deposit_form_data(request):
+    """Reads and checks the deposit form. Returns (data, errors)."""
+    errors = []
+    def _date(name, label):
+        try:
+            return datetime.date.fromisoformat(request.POST.get(name, '').strip())
+        except ValueError:
+            errors.append(f'{label} is required.')
+            return None
+    d_from, d_to, d_dep = _date('date_from', 'Date From'), _date('date_to', 'Date To'), _date('deposit_date', 'Deposit date')
+    amount = None
+    try:
+        amount = Decimal(request.POST.get('amount', '').strip())
+        if amount <= 0:
+            raise InvalidOperation
+        amount = amount.quantize(Decimal('0.001'))
+    except InvalidOperation:
+        errors.append('Enter the deposit amount.')
+    if d_from and d_to and d_from > d_to:
+        errors.append('Date From must not be after Date To.')
+    files = request.FILES.getlist('files')
+    bad = [f.name for f in files if not f.name.lower().endswith(_NOTE_FILE_EXT)]
+    if bad:
+        errors.append('Only photos or PDF files are accepted: ' + ', '.join(bad))
+    all_ids = set(Branch.objects.values_list('id', flat=True))
+    included = {int(x) for x in request.POST.getlist('branches') if x.isdigit()} & all_ids
+    if not included:
+        errors.append('Select at least one branch.')
+    return {'date_from': d_from, 'date_to': d_to, 'deposit_date': d_dep, 'amount': amount,
+            'note': request.POST.get('note', '').strip(), 'files': files,
+            'excluded': all_ids - included}, errors
+
+
+@role_required('collector', 'audit', 'manager', 'sales_manager')
+def bank_deposits_view(request):
+    profile = request.user.profile
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        dep = get_object_or_404(BankDeposit, pk=request.POST.get('deposit_id'))
+        label = f'{dep.date_from} → {dep.date_to}, {dep.amount}'
+        if action == 'delete':
+            if not _can_collect(profile):
+                raise PermissionDenied('Only the collector can delete a deposit.')
+            if dep.approved:
+                messages.error(request, 'This deposit is approved by Audit, so it is locked.')
+            else:
+                dep.delete()
+                log_activity(request, 'bank_deposit_deleted', f'Bank deposit deleted ({label})')
+                messages.success(request, 'Deposit deleted.')
+        elif action in ('approve', 'reopen'):
+            if profile.role != 'audit':
+                raise PermissionDenied('Only Audit can approve a bank deposit.')
+            note = request.POST.get('audit_note', '').strip()
+            if action == 'approve':
+                dep.approved, dep.approved_by, dep.approved_at, dep.audit_note, dep.returned = True, request.user, timezone.now(), note, False
+                dep.save()
+                BankDepositEvent.objects.create(deposit=dep, kind='approved', username=request.user.username, note=note)
+                log_activity(request, 'bank_deposit_approved', f'Bank deposit approved ({label})', details=note)
+                messages.success(request, 'Deposit approved.')
+            else:
+                if not note:
+                    messages.error(request, 'Write a note for the collector when you send a deposit back.')
+                    return redirect('bank_deposits')
+                dep.approved, dep.approved_by, dep.approved_at, dep.audit_note, dep.returned = False, None, None, note, True
+                dep.save()
+                BankDepositEvent.objects.create(deposit=dep, kind='returned', username=request.user.username, note=note)
+                log_activity(request, 'bank_deposit_reopened', f'Bank deposit sent back ({label})', details=note)
+                messages.success(request, 'Deposit sent back to the collector for editing.')
+        return redirect('bank_deposits')
+
+    status = request.GET.get('status', '')
+    qs = BankDeposit.objects.prefetch_related('files', 'events', 'excluded_branches').order_by('-deposit_date', '-id')
+    branch_id = request.GET.get('branch', '')
+    if branch_id.isdigit():
+        qs = qs.exclude(excluded_branches__id=int(branch_id))   # deposits that include this branch
+    else:
+        branch_id = ''
+    if status == 'pending':
+        qs = qs.filter(approved=False, returned=False)
+    elif status == 'returned':
+        qs = qs.filter(returned=True)
+    elif status == 'approved':
+        qs = qs.filter(approved=True)
+    return render(request, 'salesapp/bank_deposits.html', {
+        'rows': _deposit_rows(qs), 'status': status, 'branch_id': branch_id, 'all_branches': Branch.objects.all(),
+        'can_add': _can_collect(profile), 'can_approve': profile.role == 'audit',
+        'cash_tolerance': CASH_TOLERANCE,
+        'active_tab': 'bank_deposits',
+    })
+
+
+@role_required('collector')
+def bank_deposit_form_view(request, deposit_id=None):
+    dep = get_object_or_404(BankDeposit, pk=deposit_id) if deposit_id else None
+    if dep and dep.approved:
+        messages.error(request, 'This deposit is approved by Audit, so it is locked.')
+        return redirect('bank_deposits')
+    existing = list(dep.files.all()) if dep else []
+    form = None
+    if request.method == 'POST':
+        data, errors = _deposit_form_data(request)
+        keep = [f for f in existing if str(f.id) not in request.POST.getlist('remove_file')]
+        if not keep and not data['files']:
+            errors.append('Attach the bank receipt (photo or PDF).')
+        if not errors:
+            fields = {k: data[k] for k in ('date_from', 'date_to', 'deposit_date', 'amount', 'note')}
+            if dep:
+                labels = {'date_from': 'Date From', 'date_to': 'Date To', 'deposit_date': 'Deposit Date', 'amount': 'Amount', 'note': 'Note'}
+                changes = [f'{labels[k]}: {getattr(dep, k) or "—"} → {v or "—"}' for k, v in fields.items() if getattr(dep, k) != v]
+                old_ex = _excluded_ids(dep)
+                if old_ex != data['excluded']:
+                    names = dict(Branch.objects.filter(id__in=old_ex | data['excluded']).values_list('id', 'name'))
+                    fmt = lambda ids: ', '.join(sorted(names[i] for i in ids)) or 'none'
+                    changes.append(f'Branches left out: {fmt(old_ex)} → {fmt(data["excluded"])}')
+                removed = [f for f in existing if f not in keep]
+                if removed:
+                    changes.append(f'{len(removed)} receipt(s) removed')
+                if data['files']:
+                    changes.append(f'{len(data["files"])} receipt(s) added')
+                was_returned = dep.returned
+                for k, v in fields.items():
+                    setattr(dep, k, v)
+                dep.audit_note, dep.returned = '', False
+                dep.save()
+                dep.excluded_branches.set(data['excluded'])
+                for f in removed:
+                    f.delete()
+                BankDepositEvent.objects.create(
+                    deposit=dep, kind='edited', username=request.user.username,
+                    note='Corrected after Audit sent it back' if was_returned else '',
+                    details='\n'.join(changes) or 'Saved without changes')
+            else:
+                dep = BankDeposit.objects.create(created_by=request.user, **fields)
+                dep.excluded_branches.set(data['excluded'])
+                left_out = sorted(Branch.objects.filter(id__in=data['excluded']).values_list('name', flat=True))
+                BankDepositEvent.objects.create(deposit=dep, kind='created', username=request.user.username,
+                                                details=f'Amount {dep.amount} for {dep.date_from} → {dep.date_to}'
+                                                        + (f'\nBranches left out: {", ".join(left_out)}' if left_out else ''))
+            for f in data['files']:
+                BankDepositFile.objects.create(deposit=dep, file=f)
+            log_activity(request, 'bank_deposit_saved', f'Bank deposit saved ({dep.date_from} → {dep.date_to}, {dep.amount})')
+            messages.success(request, 'Deposit saved.')
+            ov = _deposit_overlaps(dep)
+            if ov:
+                messages.warning(request, 'Notice: this period overlaps another deposit: ' + '; '.join(_fmt_overlap(o) for o in ov) + '. It was saved; Audit will see the overlap.')
+            return redirect('bank_deposits')
+        for e in errors:
+            messages.error(request, e)
+        form = {k: request.POST.get(k, '') for k in ('date_from', 'date_to', 'deposit_date', 'amount', 'note')}
+        ticked = {int(x) for x in request.POST.getlist('branches') if x.isdigit()}
+    elif dep:
+        form = {'date_from': dep.date_from.isoformat(), 'date_to': dep.date_to.isoformat(),
+                'deposit_date': dep.deposit_date.isoformat(), 'amount': dep.amount, 'note': dep.note}
+        ticked = {b.id for b in Branch.objects.all()} - _excluded_ids(dep)
+    else:
+        today = timezone.localdate()
+        form = {'date_from': '', 'date_to': '', 'deposit_date': today.isoformat(), 'amount': '', 'note': ''}
+        ticked = {b.id for b in Branch.objects.all()}      # every branch is ticked; un-tick the ones left out
+    branch_boxes = [{'id': b.id, 'name': b.name, 'inactive': not b.is_active, 'checked': b.id in ticked} for b in Branch.objects.all()]
+    return render(request, 'salesapp/bank_deposit_form.html', {
+        'dep': dep, 'form': form, 'existing': existing, 'active_tab': 'bank_deposits', 'branch_boxes': branch_boxes,
+    })
+
+
+@role_required('collector', 'audit', 'manager', 'sales_manager')
+def bank_deposit_cash_view(request):
+    """Live figure for the form: the approved cash of a period, for the branches that are ticked
+    (the form sends the ones left out as `exclude`), plus each branch's own figure."""
+    try:
+        d_from = datetime.date.fromisoformat(request.GET.get('date_from', ''))
+        d_to = datetime.date.fromisoformat(request.GET.get('date_to', ''))
+    except ValueError:
+        return JsonResponse({'ok': False})
+    skip = {int(x) for x in request.GET.get('exclude', '').split(',') if x.isdigit()}
+    cash, shifts, per = _deposit_cash_by_branch(d_from, d_to, skip)
+    # the per-branch figures must also show for the branches that are un-ticked right now
+    _, _, everyone = _deposit_cash_by_branch(d_from, d_to)
+    return JsonResponse({'ok': True, 'cash': f'{cash:.3f}', 'shifts': shifts, 'branches': len(per),
+                         'per_branch': {str(p['id']): f"{p['cash']:.3f}" for p in everyone}})
+
+
+
+# ───────────────────────── Waiter users (Audit) + one-time password link ─────────────────────────
+
+RESET_LINK_HOURS = 24
+
+
+def _waiter_login_keys(profile):
+    keys = []
+    if profile.branch and profile.branch.code:
+        code = profile.branch.code.lower()
+        keys += [f'login_attempts:branch:{code}', f'login_attempts:branch:{code}:{(profile.punch_id or "").lower()}']
+    return keys
+
+
+def _waiter_or_404(user_id):
+    """Audit only ever touches waiter accounts."""
+    return get_object_or_404(User.objects.select_related('profile', 'profile__branch'), id=user_id, profile__role='waiter')
+
+
+@role_required('audit')
+def waiter_users_view(request):
+    waiters = list(User.objects.select_related('profile', 'profile__branch').filter(profile__role='waiter')
+                   .order_by('profile__branch__name', 'profile__head_cashier_name'))
+    return render(request, 'salesapp/waiter_users.html', {
+        'waiters': waiters, 'new_link': request.session.pop('new_reset_link', None),
+        'link_hours': RESET_LINK_HOURS, 'active_tab': 'waiter_users',
+    })
+
+
+@role_required('audit')
+@require_POST
+def waiter_toggle_active_view(request, user_id):
+    target = _waiter_or_404(user_id)
+    target.is_active = not target.is_active
+    target.save(update_fields=['is_active'])
+    if target.is_active and target.profile.pending_approval:
+        target.profile.pending_approval = False
+        target.profile.save(update_fields=['pending_approval'])
+    state = 'activated' if target.is_active else 'deactivated'
+    log_activity(request, f'user_{state}', description=f'{target.username} (waiter {target.profile.head_cashier_name})')
+    messages.success(request, f'{target.profile.head_cashier_name or target.username} {state}.')
+    return redirect('waiter_users')
+
+
+@role_required('audit')
+@require_POST
+def waiter_delete_view(request, user_id):
+    target = _waiter_or_404(user_id)
+    name = f'{target.profile.head_cashier_name or target.username} ({target.username})'
+    target.delete()
+    log_activity(request, 'user_deleted', description=f'waiter {name}')
+    messages.success(request, f'Waiter {name} deleted.')
+    return redirect('waiter_users')
+
+
+@role_required('audit')
+@require_POST
+def waiter_reset_link_view(request, user_id):
+    target = _waiter_or_404(user_id)
+    if not target.is_active:
+        messages.error(request, 'This account is not active. Activate it first, then create the link.')
+        return redirect('waiter_users')
+    WaiterResetLink.objects.filter(user=target, used_at__isnull=True).delete()   # the older link stops working
+    token = secrets.token_urlsafe(32)
+    WaiterResetLink.objects.create(
+        user=target, token_hash=hashlib.sha256(token.encode()).hexdigest(), created_by=request.user,
+        expires_at=timezone.now() + datetime.timedelta(hours=RESET_LINK_HOURS))
+    url = request.build_absolute_uri(reverse('waiter_reset_password', args=[token]))
+    request.session['new_reset_link'] = {'user': target.profile.head_cashier_name or target.username, 'url': url}
+    log_activity(request, 'password_link_created', description=f'{target.username} (waiter {target.profile.head_cashier_name})')
+    return redirect('waiter_users')
+
+
+def waiter_reset_password_view(request, token):
+    """Public page the waiter opens from the link Audit sent. Works once."""
+    link = WaiterResetLink.objects.select_related('user', 'user__profile', 'user__profile__branch').filter(
+        token_hash=hashlib.sha256(token.encode()).hexdigest()).first()
+    valid = bool(link and link.used_at is None and link.expires_at > timezone.now() and link.user.is_active
+                 and getattr(link.user, 'profile', None) and link.user.profile.role == 'waiter')
+    if not valid:
+        return render(request, 'salesapp/waiter_reset_password.html', {'invalid': True}, status=410)
+    if request.method == 'POST':
+        pw1, pw2 = request.POST.get('password1', ''), request.POST.get('password2', '')
+        if len(pw1) < 8:
+            messages.error(request, 'The password must be at least 8 characters.')
+        elif pw1 != pw2:
+            messages.error(request, 'The two passwords do not match.')
+        else:
+            link.user.set_password(pw1)
+            link.user.save(update_fields=['password'])
+            link.used_at = timezone.now()
+            link.save(update_fields=['used_at'])
+            for key in _waiter_login_keys(link.user.profile):
+                cache.delete(key)
+            log_activity(request, 'password_reset_done', description=f'{link.user.username} (waiter {link.user.profile.head_cashier_name})',
+                         user=link.user)
+            logout(request)   # whoever was signed in on this browser (Audit testing the link, a shared tablet) is signed out
+            messages.success(request, 'Password changed. Enter your new password to log in.')
+            prof = link.user.profile
+            # the login page opens with this waiter's branch code and Punch ID already filled in
+            return redirect(f"{reverse('login')}?{urlencode({'branch_code': prof.branch.code if prof.branch else '', 'punch_id': prof.punch_id})}")
+    return render(request, 'salesapp/waiter_reset_password.html', {'waiter': link.user.profile})

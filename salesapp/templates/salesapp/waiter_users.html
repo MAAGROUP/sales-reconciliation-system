@@ -1,0 +1,82 @@
+{% extends "salesapp/base.html" %}
+{% block content %}
+
+{% if new_link %}
+<div class="card" style="background:#EEF6EE; border:2px solid #9CCB9C;">
+  <h3 style="color:#2E7D5B; margin-top:0;">Password link for {{ new_link.user }}</h3>
+  <p style="font-size:13px; color:#3F5E3F; margin-top:0;">Send this link to the waiter (WhatsApp, for example). It works <b>once</b> and expires in {{ link_hours }} hours. Creating a new link cancels this one.</p>
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <input id="resetLink" value="{{ new_link.url }}" readonly style="flex:1; min-width:260px;" onclick="this.select()">
+    <button type="button" class="btn" id="copyLink">Copy link</button>
+  </div>
+  <div id="copied" style="display:none; margin-top:8px; font-size:13px; color:#2E7D5B; font-weight:700;">Copied.</div>
+</div>
+<script>
+document.getElementById('copyLink').onclick=function(){
+  var i=document.getElementById('resetLink'); i.select();
+  var done=function(){ document.getElementById('copied').style.display='block'; };
+  if(navigator.clipboard){ navigator.clipboard.writeText(i.value).then(done,function(){ document.execCommand('copy'); done(); }); }
+  else { document.execCommand('copy'); done(); }
+};
+</script>
+{% endif %}
+
+<div class="card">
+  <h3>Waiter Users</h3>
+  <p style="color:#8A8578; font-size:13px; margin-top:0;">All waiter accounts. You can activate or deactivate an account, delete it, or create a one-time link for a waiter who forgot the password.</p>
+  {% if waiters %}
+  <div style="overflow-x:auto;">
+  <table>
+    <thead><tr><th>Branch</th><th>Head Cashier</th><th>Punch ID</th><th>Username</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for w in waiters %}
+      <tr>
+        <td>{{ w.profile.branch.name|default:"-" }}</td>
+        <td>{{ w.profile.head_cashier_name|default:"-" }}</td>
+        <td>{{ w.profile.punch_id|default:"-" }}</td>
+        <td>{{ w.username }}</td>
+        <td>{% if w.profile.pending_approval %}<span class="badge" style="background:#FFF3D6; color:#8A6410;">Waiting for approval</span>{% elif w.is_active %}<span class="badge ok">Active</span>{% else %}<span class="badge flag">Inactive</span>{% endif %}</td>
+        <td style="white-space:nowrap;">
+          {% if w.is_active %}<button type="button" class="btn small wu-act" data-act="link" data-url="{% url 'waiter_reset_link' w.id %}" data-name="{{ w.profile.head_cashier_name|default:w.username }}">Password link</button>{% endif %}
+          <button type="button" class="btn small secondary wu-act" data-act="toggle" data-url="{% url 'waiter_toggle_active' w.id %}" data-name="{{ w.profile.head_cashier_name|default:w.username }}" data-active="{{ w.is_active|yesno:'1,0' }}">{% if w.profile.pending_approval %}Approve{% elif w.is_active %}Deactivate{% else %}Activate{% endif %}</button>
+          <button type="button" class="btn small secondary wu-act" data-act="delete" data-url="{% url 'waiter_delete' w.id %}" data-name="{{ w.profile.head_cashier_name|default:w.username }}" style="color:#B94A3F;">Delete</button>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}<p style="color:#8A8578; margin:0;">No waiter accounts yet.</p>{% endif %}
+</div>
+
+<form method="post" id="wuForm" style="display:none;">{% csrf_token %}</form>
+<div id="wuModal" style="position:fixed; inset:0; z-index:1000; background:rgba(28,25,23,.55); display:none; align-items:center; justify-content:center; padding:20px;">
+  <div style="background:#fff; border-radius:18px; max-width:420px; width:100%; padding:26px 26px 22px; box-shadow:0 18px 50px rgba(0,0,0,.25);">
+    <h3 id="wuTitle" style="margin:0 0 12px; font-size:19px; color:#1F3B4D;"></h3>
+    <div style="background:#F5F3EC; border-radius:10px; padding:10px 14px; font-size:14px; color:#1F3B4D;"><b id="wuName"></b></div>
+    <p id="wuText" style="font-size:13px; color:#5A564B; margin:12px 0 0;"></p>
+    <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:18px;">
+      <button type="button" class="btn secondary" id="wuCancel">Cancel</button>
+      <button type="button" class="btn" id="wuOk">Confirm</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var modal=document.getElementById('wuModal'), cur=null;
+  document.addEventListener('click',function(e){
+    var b=e.target.closest('.wu-act'); if(!b) return; cur=b;
+    var a=b.dataset.act, t, txt, ok;
+    if(a==='link'){ t='Create a password link?'; ok='Create link'; txt='A one-time link, valid for {{ link_hours }} hours. Any older link for this waiter stops working.'; }
+    else if(a==='delete'){ t='Delete this waiter?'; ok='Delete'; txt='The account is deleted for good. Their past shifts stay in the system.'; }
+    else if(b.dataset.active==='1'){ t='Deactivate this account?'; ok='Deactivate'; txt='The waiter will not be able to log in until you activate it again.'; }
+    else { t='Activate this account?'; ok='Activate'; txt='The waiter will be able to log in.'; }
+    document.getElementById('wuTitle').textContent=t; document.getElementById('wuName').textContent=b.dataset.name;
+    document.getElementById('wuText').textContent=txt; document.getElementById('wuOk').textContent=ok;
+    modal.style.display='flex';
+  });
+  document.getElementById('wuCancel').onclick=function(){ modal.style.display='none'; };
+  document.getElementById('wuOk').onclick=function(){ var f=document.getElementById('wuForm'); f.action=cur.dataset.url; f.submit(); };
+})();
+</script>
+{% endblock %}

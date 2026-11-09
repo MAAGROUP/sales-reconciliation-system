@@ -1,0 +1,118 @@
+{% extends "salesapp/base.html" %}
+{% block content %}
+
+<div class="card">
+  <h3>{% if dep %}Edit Bank Deposit{% else %}New Bank Deposit{% endif %}</h3>
+  {% if dep and dep.audit_note %}<div class="msg warning"><b>Audit note:</b> {{ dep.audit_note }}</div>{% endif %}
+  <form method="post" enctype="multipart/form-data" id="depositForm">
+    {% csrf_token %}
+    <div class="grid grid-3" style="margin-bottom:14px;">
+      <div><label>Date From</label><input type="date" name="date_from" id="dFrom" value="{{ form.date_from }}" required></div>
+      <div><label>Date To</label><input type="date" name="date_to" id="dTo" value="{{ form.date_to }}" required></div>
+      <div><label>Deposit Date</label><input type="date" name="deposit_date" value="{{ form.deposit_date }}" required></div>
+    </div>
+    <div style="margin-bottom:14px; position:relative; max-width:420px;" id="brWrap">
+      <label>Branches in this deposit <span style="color:#C0392B;">*</span></label>
+      <button type="button" id="brBtn" style="width:100%; display:flex; justify-content:space-between; align-items:center; gap:10px; background:#fff; border:1px solid #D9D5C8; border-radius:10px; padding:10px 14px; font-size:14px; cursor:pointer; color:#1F3B4D; text-align:left;">
+        <span id="brCount">All branches</span><span style="font-size:11px; color:#8A8578;">&#9662;</span>
+      </button>
+      <div id="brPanel" style="display:none; position:absolute; left:0; right:0; top:100%; margin-top:4px; z-index:30; background:#fff; border:1px solid #D9D5C8; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.15); padding:10px 12px;">
+        <input type="search" id="brSearch" placeholder="Search a branch..." autocomplete="off" style="width:100%; margin-bottom:8px;">
+        <div style="display:flex; gap:8px; margin-bottom:8px;">
+          <button type="button" class="btn small secondary" id="brAll">Select all</button>
+          <button type="button" class="btn small secondary" id="brNone">Clear</button>
+        </div>
+        <div id="brBox" style="max-height:260px; overflow:auto;">
+          {% for b in branch_boxes %}
+          <label class="br-row" data-name="{{ b.name|lower }}" style="display:flex; align-items:center; gap:8px; font-weight:400; font-size:13px; margin:0; padding:6px 4px; border-bottom:1px solid #F3F1EA; cursor:pointer;">
+            <input type="checkbox" name="branches" value="{{ b.id }}" class="br-cb" style="width:auto;" {% if b.checked %}checked{% endif %}>
+            <span>{{ b.name }}{% if b.inactive %} <span style="color:#9A9585; font-size:11px;">(inactive)</span>{% endif %}</span>
+            <span class="br-cash" data-id="{{ b.id }}" style="margin-left:auto; font-size:11px; color:#8A8578; font-variant-numeric:tabular-nums;"></span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      <div id="brLeft" style="font-size:12px; color:#B94A3F; margin-top:6px;"></div>
+      <div style="font-size:12px; color:#8A8578; margin-top:4px;">All branches are ticked. Un-tick only the branch whose cash was not part of this deposit; the cash is compared for the ticked branches only.</div>
+    </div>
+    <div id="cashStrip" class="total-strip" style="margin-bottom:14px; display:none;">
+      <span>Approved cash for this period</span><span><b id="cashVal"></b> RO <span id="cashInfo" style="font-weight:400; font-size:12px; color:#8A8578;"></span></span>
+    </div>
+    <div class="grid grid-2" style="margin-bottom:14px;">
+      <div><label>Deposited Amount (RO)</label><input type="number" step="0.001" min="0" name="amount" id="dAmount" value="{{ form.amount }}" required></div>
+      <div><label>Difference</label><div id="diffVal" style="padding:10px 0; font-weight:700;">—</div></div>
+    </div>
+    <div style="margin-bottom:14px;">
+      <label>Bank Receipt(s) — photos or PDF <span style="color:#C0392B;">*</span></label>
+      {% if existing %}
+        <div style="margin-bottom:8px;">
+        {% for f in existing %}
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400; margin-right:14px;">
+            <a href="{{ f.file.url }}" target="_blank" rel="noopener" style="font-size:12px; color:#3B6FE0;">📎 Receipt {{ forloop.counter }}</a>
+            <input type="checkbox" name="remove_file" value="{{ f.id }}" style="width:auto;"> remove
+          </label>
+        {% endfor %}
+        </div>
+      {% endif %}
+      <input type="file" name="files" accept="image/*,.pdf" multiple {% if not existing %}required{% endif %}>
+    </div>
+    <div style="margin-bottom:14px;">
+      <label>Note</label>
+      <textarea name="note" rows="3" style="width:100%;">{{ form.note }}</textarea>
+    </div>
+    <button type="submit" class="btn">Save Deposit</button>
+    <a href="{% url 'bank_deposits' %}" class="btn secondary" style="text-decoration:none; margin-left:8px;">Cancel</a>
+  </form>
+</div>
+
+<script>
+(function(){
+  var f=document.getElementById('dFrom'), t=document.getElementById('dTo'), a=document.getElementById('dAmount');
+  var cash=null;
+  function diff(){
+    var el=document.getElementById('diffVal');
+    if(cash===null || a.value===''){ el.textContent='—'; el.style.color=''; return; }
+    var d=parseFloat(a.value)-cash;
+    el.textContent=d.toFixed(3);
+    el.style.color=Math.abs(d)>{{ cash_tolerance|default:"0.001" }}?'#B94A3F':'#2E7D5B';
+  }
+  var boxes=[].slice.call(document.querySelectorAll('.br-cb'));
+  function counts(){
+    var n=boxes.filter(function(b){return b.checked;}).length;
+    document.getElementById('brCount').textContent=(n===boxes.length)?'All branches ('+n+')':n+' of '+boxes.length+' branches';
+    var left=boxes.filter(function(b){return !b.checked;}).map(function(b){return b.parentNode.querySelector('span').textContent.trim();});
+    document.getElementById('brLeft').textContent=left.length?('Left out: '+(left.length>4?left.slice(0,4).join(', ')+' +'+(left.length-4)+' more':left.join(', '))):'';
+  }
+  function load(){
+    counts();
+    if(!f.value||!t.value){ return; }
+    var skip=boxes.filter(function(b){return !b.checked;}).map(function(b){return b.value;}).join(',');
+    fetch('{% url "bank_deposit_cash" %}?date_from='+f.value+'&date_to='+t.value+'&exclude='+skip,{credentials:'same-origin'})
+      .then(function(r){return r.json();}).then(function(j){
+        if(!j.ok){ return; }
+        cash=parseFloat(j.cash);
+        document.getElementById('cashVal').textContent=j.cash;
+        document.getElementById('cashInfo').textContent='('+j.branches+' branches · '+j.shifts+' shifts)';
+        document.querySelectorAll('.br-cash').forEach(function(el){ var v=j.per_branch[el.dataset.id]; el.textContent=v?v+' RO':''; });
+        document.getElementById('cashStrip').style.display='flex';
+        diff();
+      });
+  }
+  boxes.forEach(function(b){ b.addEventListener('change',load); });
+  var panel=document.getElementById('brPanel');
+  document.getElementById('brBtn').onclick=function(){ panel.style.display=(panel.style.display==='block')?'none':'block'; if(panel.style.display==='block'){ document.getElementById('brSearch').focus(); } };
+  document.addEventListener('click',function(e){ if(!document.getElementById('brWrap').contains(e.target)){ panel.style.display='none'; } });
+  document.getElementById('brSearch').addEventListener('input',function(){
+    var q=this.value.trim().toLowerCase();
+    document.querySelectorAll('.br-row').forEach(function(r){ r.style.display=(!q||r.dataset.name.indexOf(q)>-1)?'flex':'none'; });
+  });
+  document.getElementById('brAll').onclick=function(){ boxes.forEach(function(b){b.checked=true;}); load(); };
+  document.getElementById('brNone').onclick=function(){ boxes.forEach(function(b){b.checked=false;}); load(); };
+  document.getElementById('depositForm').addEventListener('submit',function(e){
+    if(!boxes.some(function(b){return b.checked;})){ e.preventDefault(); panel.style.display='block'; alert('Select at least one branch.'); }
+  });
+  f.addEventListener('change',load); t.addEventListener('change',load); a.addEventListener('input',diff);
+  load();
+})();
+</script>
+{% endblock %}
