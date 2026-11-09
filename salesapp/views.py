@@ -2644,7 +2644,13 @@ def archive_entry_view(request, entry_id):
 @role_required('collector', 'audit', 'admin')
 def archive_history_view(request):
     """Shows archived (removed-from-view) entries, grouped by branch, with an Unarchive action."""
-    qs = ShiftEntry.objects.select_related('branch', 'collector').filter(is_archived=True).exclude(request_status__in=['pending', 'rejected']).order_by('-created_at')
+    qs = ShiftEntry.objects.select_related('branch', 'collector').filter(is_archived=True).exclude(request_status='pending').order_by('-created_at')
+
+    status_filter = request.GET.get('status_filter', '').strip()
+    if status_filter == 'rejected':
+        qs = qs.filter(request_status='rejected')
+    elif status_filter == 'normal':
+        qs = qs.exclude(request_status='rejected')
 
     branch_filter = request.GET.get('branch_filter', '').strip()
     date_filter = request.GET.get('date_filter', '').strip()
@@ -2667,6 +2673,7 @@ def archive_history_view(request):
         'branch_filter': branch_filter,
         'date_filter': date_filter,
         'search_ref': search_ref,
+        'status_filter': status_filter,
         'active_tab': 'history',
     }
     return render(request, 'salesapp/archive_history.html', context)

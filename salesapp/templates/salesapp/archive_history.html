@@ -3,12 +3,22 @@
 
 <div class="card">
   <h3>Archive</h3>
-  <p style="color:#8A8578; font-size:13px; margin-top:0;">Entries that have been archived (removed from the main list). Unarchive to bring one back.</p>
+  <p style="color:#8A8578; font-size:13px; margin-top:0;">Entries that have been archived (removed from the main list). Unarchive to bring one back. Rejected waiter requests are shown here for reference only and cannot be unarchived.</p>
   <form method="get">
     <div class="grid grid-3" style="margin-bottom:14px;">
       <div><label>Filter by Branch</label><input name="branch_filter" value="{{ branch_filter }}" placeholder="e.g. Kucu Ibri"></div>
       <div><label>Filter by Date</label><input name="date_filter" type="date" value="{{ date_filter }}"></div>
       <div><label>Submit Request No.</label><input name="search_ref" value="{{ search_ref }}" placeholder="e.g. K-DH001-0002"></div>
+    </div>
+    <div class="grid grid-3" style="margin-bottom:14px;">
+      <div>
+        <label>Status</label>
+        <select name="status_filter">
+          <option value="" {% if not status_filter %}selected{% endif %}>All</option>
+          <option value="normal" {% if status_filter == 'normal' %}selected{% endif %}>Archived only</option>
+          <option value="rejected" {% if status_filter == 'rejected' %}selected{% endif %}>Rejected requests only</option>
+        </select>
+      </div>
     </div>
     <button type="submit" class="btn small">Apply</button>
   </form>
@@ -31,18 +41,28 @@
       </thead>
       <tbody>
         {% for e in group.entries %}
-        <tr>
-          <td><strong>{{ e.reference_id }}</strong></td>
+        <tr{% if e.request_status == 'rejected' %} style="background:#FDF3F1;"{% endif %}>
+          <td>
+            <strong>{{ e.reference_id }}</strong>
+            {% if e.request_status == 'rejected' %}
+              <span class="badge flag" style="background:#FBE9E6; color:#B94A3F; margin-left:6px;">Rejected</span>
+              {% if e.request_reason %}<div style="font-size:12px; color:#8A8578; margin-top:4px;">Reason: {{ e.request_reason }}</div>{% endif %}
+            {% endif %}
+          </td>
           <td>{{ e.date }}</td>
           <td>Shift {{ e.shift }}</td>
           <td>{% include "salesapp/_submitter.html" with name=e.accountant punch=e.submitted_punch %}</td>
           {% if user.profile.role == 'collector' %}<td>{{ e.cash_total|floatformat:3 }} RO</td>{% else %}<td>{{ e.sales_actual|floatformat:3 }} RO</td>
           <td style="{% if e.expected_foodics and e.variance != 0 %}color:#B94A3F; font-weight:700;{% endif %}">{% if e.expected_foodics %}{{ e.variance|floatformat:3 }} RO{% else %}-{% endif %}</td>{% endif %}
           <td>
+            {% if e.request_status == 'rejected' %}
+              <span style="font-size:12px; color:#8A8578;">Rejected by Audit</span>
+            {% else %}
             <form method="post" action="{% url 'archive_entry' e.id %}" style="display:inline;">
               {% csrf_token %}
               <button type="submit" class="btn secondary small">Unarchive</button>
             </form>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
