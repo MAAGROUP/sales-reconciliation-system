@@ -212,6 +212,23 @@ document.addEventListener('DOMContentLoaded', function(){
     const saved = JSON.parse(sessionStorage.getItem('auditTab') || 'null');
     if (saved && saved.entry && saved.entry === '{{ selected_entry.id|default:"" }}' && document.getElementById('tabBtnSalesA')) showAuditTab(saved.tab);
   } catch(e) {}
+  // After "Approve all shifts" or closing the day: land on the day-close card (cursor in the Foodics box),
+  // instead of at the top of the page.
+  if (location.hash === '#dayCloseCard' && document.getElementById('dayCloseCard')) {
+    if (document.getElementById('tabBtnSalesA')) showAuditTab('sales');
+    document.getElementById('dayCloseCard').scrollIntoView({block: 'start'});
+    const foodics = document.getElementById('dayFoodicsInput');
+    if (foodics && !foodics.disabled) foodics.focus({preventScroll: true});
+  }
+  // After approving cash: land on the card that was used (Day Cash, or the shift's own cash card).
+  // If the Day Cash card is gone (nothing left to approve), fall back to the shift's cash card.
+  if (location.hash === '#dayCashCard' || location.hash === '#stepCashCollected') {
+    const card = document.getElementById(location.hash.slice(1)) || document.getElementById('stepCashCollected');
+    if (card) {
+      if (document.getElementById('tabBtnCashA')) showAuditTab('cash');
+      card.scrollIntoView({block: 'start'});
+    }
+  }
 });
 </script>
 
@@ -735,6 +752,50 @@ calcAll();
 </script>
 
 <div id="tabCashA_2" style="display:none;">
+{% if cash_day and cash_day.rows|length > 1 %}
+<div class="card" id="dayCashCard">
+  <h3>Day Cash — {{ selected_entry.branch.name }} · {{ selected_entry.date|date:"M d, Y" }}</h3>
+  <p style="color:#6F6A5C; font-size:13px; margin:0 0 12px; line-height:1.6;">The cash of every shift of this day, as the collector counted it. Shifts without a cash difference can be approved together; a shift with a difference is opened on its own, where Audit can review and correct it.</p>
+  <div style="overflow-x:auto;">
+  <table style="margin:0;">
+    <thead><tr><th>Shift</th><th>Submit Request No.</th><th>Waiter cash</th><th>Collector cash</th><th>Difference</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for r in cash_day.rows %}
+      <tr {% if r.entry.id == selected_entry.id %}style="background:#F7F5EE;"{% endif %}>
+        <td>Shift {{ r.entry.shift }}</td>
+        <td><a href="?entry_id={{ r.entry.id }}" style="color:#3B6FE0; text-decoration:none;">{{ r.entry.reference_id }}</a></td>
+        <td>{{ r.entry.cash_total|floatformat:3 }}</td>
+        <td>{% if r.handover %}{{ r.handover.cash_total|floatformat:3 }}{% else %}—{% endif %}</td>
+        <td>{% if r.handover %}<span {% if r.state == 'difference' %}style="color:#B94A3F; font-weight:700;"{% endif %}>{{ r.diff|floatformat:3 }}</span>{% else %}—{% endif %}</td>
+        <td>
+          {% if r.state == 'reconciled' %}<span class="badge ok">Approved</span>
+          {% elif r.state == 'ready' %}<span class="badge flag" style="background:#FFF3D6; color:#8A5410;">Ready</span>
+          {% elif r.state == 'difference' %}<span class="badge flag">Difference — open it</span>
+          {% else %}<span class="badge flag" style="background:#F0EEE7; color:#8A8578;">Not collected yet</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="grid grid-3" style="margin-top:12px;">
+    <div class="total-strip"><span>Day waiter cash</span><span>{{ cash_day.waiter_total|floatformat:3 }} RO</span></div>
+    <div class="total-strip"><span>Day collector cash</span><span>{{ cash_day.collector_total|floatformat:3 }} RO</span></div>
+    <div class="total-strip {% if cash_day.diff_total %}flag{% endif %}"><span>Difference</span><span>{{ cash_day.diff_total|floatformat:3 }} RO</span></div>
+  </div>
+  {% if cash_day.ready_ids and not is_viewer %}
+  <form method="post" action="{% url 'cash_reconcile_action' %}" id="approveCashAllForm" style="margin-top:14px; background:#F5F3EC; border:1px solid #E7E4DB; border-radius:10px; padding:14px;">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="approve_matched">
+    {% for hid in cash_day.ready_ids %}<input type="hidden" name="handover_id" value="{{ hid }}">{% endfor %}
+    <label>Note for all shifts (optional)</label>
+    <textarea name="note" rows="2" placeholder="Saved as the Audit note of every shift approved here..." style="max-width:100%;"></textarea>
+    <button type="submit" class="btn" style="margin-top:10px;" onclick="return confirm('Approve the cash of {{ cash_day.ready_ids|length }} shift{{ cash_day.ready_ids|length|pluralize }}?');">Approve cash for all shifts ({{ cash_day.ready_ids|length }})</button>
+    <div style="font-size:12px; color:#6F6A5C; margin-top:6px;">Approves only the shifts marked <b>Ready</b>, as they are now.{% if cash_day.counts.difference %} {{ cash_day.counts.difference }} shift{{ cash_day.counts.difference|pluralize }} with a difference stay{{ cash_day.counts.difference|pluralize:"s," }} for you to open one by one.{% endif %}</div>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
 <div class="card" id="stepCashCollected">
   <h3>Cash Reconciliation</h3>
   {% if selected_handover %}

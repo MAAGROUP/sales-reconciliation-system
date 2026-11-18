@@ -883,10 +883,6 @@ def _can_collect(profile):
     return profile.role == 'collector' or profile.is_full_access
 
 
-def _can_reconcile(profile):
-    return profile.role == 'audit' or profile.is_full_access
-
-
 def _collector_approve_entries(request, targets, note):
     """Approve Handover for these shifts: every shift with no collector count yet is saved as
     collected, with the waiter's cash counts as they are (the collector confirms they are
@@ -1239,7 +1235,7 @@ def _approve_all(request, entry):
     waiting = list(ShiftEntry.objects.filter(branch=entry.branch, date=entry.date, is_archived=False, is_audited=False).order_by('shift'))
     if not waiting:
         messages.info(request, 'Every shift of this day is already approved.')
-        return redirect(_reopen_url(request, '/dashboard/', entry.id))
+        return redirect(_reopen_url(request, '/dashboard/', entry.id) + '#dayCloseCard')   # straight back to the Foodics box
     for e in waiting:
         if not e.original_snapshot:
             e.original_snapshot = _shift_snapshot(e)   # legacy shift: baseline = how it stood before
@@ -1255,7 +1251,7 @@ def _approve_all(request, entry):
         log_activity(request, 'entry_audited', description=e.reference_id, details='\n'.join(lines))
     refs = ', '.join(e.reference_id for e in waiting)
     messages.success(request, f'Approved {len(waiting)} shift(s): {refs}.')
-    return redirect(_reopen_url(request, '/dashboard/', entry.id))
+    return redirect(_reopen_url(request, '/dashboard/', entry.id) + '#dayCloseCard')   # straight back to the Foodics box
 
 
 def _decide_request(request, entry):
@@ -1420,10 +1416,12 @@ def dashboard_view(request):
         )
 
     day_status = day_history = None
+    cash_day = None
     day_collector_history = []
     day_flagged = False
     if selected_entry:
         day_status = _day_status(selected_entry.branch, selected_entry.date)
+        cash_day = _cash_day(selected_entry)
         day_history = list(ActivityLog.objects.filter(
             action='day_closed', description=f'{selected_entry.branch.name} {selected_entry.date}'
         ).order_by('-created_at'))
@@ -1515,6 +1513,7 @@ def dashboard_view(request):
         'review_log': review_log,
         'variance_threshold': threshold,
         'day_status': day_status,
+        'cash_day': cash_day,
         'day_collector_history': day_collector_history,
         'day_history': day_history,
         'day_flagged': day_flagged,
@@ -2005,6 +2004,33 @@ def _parse_hhmm(raw):
     return datetime.time(hour, minute)
 
 
+def _cash_day(entry):
+    """The cash of every shift of this branch + day, for the Audit Cash tab ("Day Cash" card).
+    A shift is READY when the collector counted it, Audit has not approved its cash yet and it
+    has no cash difference (those are opened one by one). Shifts the collector has not counted
+    yet are simply listed as "Not collected yet"."""
+    rows, ready_ids = [], []
+    waiter_total = collector_total = Decimal('0')
+    for e in ShiftEntry.objects.filter(branch=entry.branch, date=entry.date, is_archived=False).select_related('collector').order_by('shift', 'id'):
+        h = e.collector_record
+        row = {'entry': e, 'handover': h, 'state': 'not_collected', 'diff': None}
+        if h is not None:
+            collector_total += Decimal(str(h.cash_total))
+            waiter_total += Decimal(str(e.cash_total))
+            row['diff'] = Decimal(str(h.diff_from_waiter))
+            if h.reconciled:
+                row['state'] = 'reconciled'
+            elif h.has_difference(CASH_TOLERANCE):
+                row['state'] = 'difference'
+            else:
+                row['state'] = 'ready'
+                ready_ids.append(h.id)
+        rows.append(row)
+    return {'rows': rows, 'ready_ids': ready_ids, 'waiter_total': waiter_total, 'collector_total': collector_total,
+            'diff_total': collector_total - waiter_total,
+            'counts': {k: sum(1 for r in rows if r['state'] == k) for k in ('ready', 'difference', 'reconciled', 'not_collected')}}
+
+
 def _day_status(branch, date):
     """Where a business day stands: which of the branch's shifts have been submitted and
     approved by Audit, and whether the day can be closed (Foodics for the whole day)."""
@@ -2038,7 +2064,7 @@ def _close_day(request, entry):
     """Audit closes (or re-closes) the day of the opened shift: one Foodics figure for the
     whole day. Every change is logged as from -> to, like the rest of the audit trail."""
     status = _day_status(entry.branch, entry.date)
-    back = redirect(_reopen_url(request, '/dashboard/', entry.id))
+    back = redirect(_reopen_url(request, '/dashboard/', entry.id) + '#dayCloseCard')   # stay on the day-close card
     if not status['can_close']:
         parts = []
         if status['missing']:
@@ -2808,10 +2834,11 @@ def cash_reconcile_action_view(request):
 
     if action == 'approve_matched':
         approved = 0
+        bulk_note = request.POST.get('note', '').strip()
         for h in handovers:
             # Re-checked here: a shift with a difference is never bulk-approved.
             if not h.has_difference(CASH_TOLERANCE):
-                _mark_reconciled(request, h)
+                _mark_reconciled(request, h, bulk_note)
                 approved += 1
         skipped = len(handovers) - approved
         if approved:
@@ -2843,21 +2870,20 @@ def cash_reconcile_action_view(request):
     else:
         messages.error(request, 'Unknown action.')
 
-    return redirect(request.META.get('HTTP_REFERER') or 'cash_reconciliation')
+    # Back to the same report, on the card that was just used (not the top of the page).
+    back = request.META.get('HTTP_REFERER', '')
+    if not back or not url_has_allowed_host_and_scheme(back, allowed_hosts={request.get_host()}, require_https=request.is_secure()):
+        back = '/dashboard/'
+    anchor = '#dayCashCard' if action == 'approve_matched' else '#stepCashCollected'
+    return redirect(back.split('#')[0] + anchor)
 
 
 
 # ───────────────────────── Bank Deposits (weekly cash deposit receipts) ─────────────────────────
 
-def _deposit_cash(date_from, date_to, excluded_ids=()):
-    """The cash the collector approved for shifts dated date_from..date_to, for every branch
-    except the excluded ones. Returns (total, shift count, branch count)."""
-    total, shifts, per = _deposit_cash_by_branch(date_from, date_to, excluded_ids)
-    return total, shifts, len(per)
-
-
 def _deposit_cash_by_branch(date_from, date_to, excluded_ids=()):
-    """Same figures, plus the split per branch: (total, shifts, [{id, name, cash, shifts}, ...])."""
+    """The cash the collector approved for shifts dated date_from..date_to, for every branch except the
+    excluded ones, with the split per branch: (total, shifts, [{id, name, cash, shifts}, ...])."""
     qs = ShiftEntry.objects.filter(date__gte=date_from, date__lte=date_to, is_archived=False,
                                    collector_approved=True, collector__isnull=False)
     if excluded_ids:

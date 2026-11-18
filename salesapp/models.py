@@ -1,7 +1,6 @@
 import datetime
 from decimal import Decimal
 from django.db import models
-from django.conf import settings
 from django.contrib.auth.models import User
 from .constants import DENOMS, AED_DENOMS, DELIVERY_SOURCES, SHIFT_CHOICES
 
@@ -235,9 +234,6 @@ class ShiftEntry(models.Model):
 
     class Meta:
         ordering = ['-created_at']
-
-    def delivery_attachment_field(self, key):
-        return getattr(self, f'delivery_attachment_{key}', None)
 
     def recalculate(self):
         """Server-side auto-calculation — never trust client-side totals.
