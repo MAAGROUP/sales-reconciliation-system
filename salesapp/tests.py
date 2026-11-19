@@ -7,7 +7,7 @@ import datetime
 from django.contrib.auth.models import User
 from django.test import TestCase
 
-from .models import Branch, CollectorHandover, DayClose, ShiftEntry, UserProfile
+from .models import ActivityLog, Branch, CollectorHandover, DayClose, ShiftEntry, UserProfile
 
 ROLES = ('waiter', 'collector', 'audit', 'manager', 'sales_manager', 'admin', 'it')
 
@@ -205,6 +205,35 @@ class ApprovalStaysTests(AuditFlowTestCase):
         self.login('collector')
         self.collector_counts({'1': {'10': 4}, '2': {'10': 2}})
         self.assertTrue(all(e.is_audited for e in ShiftEntry.objects.all()))
+
+    def test_out_of_date_copy_cannot_undo_the_approval(self):
+        stale = ShiftEntry.objects.get(pk=self.e1.pk)          # loaded before Audit approves
+        self.login('audit')
+        self.approve_shifts()
+        CollectorHandover.objects.create(shift_entry=stale, cash_counts={'10': 4})
+        entry = ShiftEntry.objects.get(pk=self.e1.pk)
+        self.assertTrue(entry.is_audited)
+        self.assertEqual(entry.actual_total, 40)                # the totals still follow the collector
+
+    def test_a_removed_approval_is_logged(self):
+        self.login('audit')
+        self.approve_shifts()
+        entry = ShiftEntry.objects.get(pk=self.e1.pk)
+        entry.is_audited = False                                # whatever the cause, it must leave a trace
+        entry.save()
+        log = ActivityLog.objects.get(action='review_reset')
+        self.assertEqual(log.description, entry.reference_id)
+        self.assertIn('Where:', log.details)
+        history = self.client.get(f'/dashboard/?entry_id={entry.id}').context['sales_day_history']
+        self.assertIn(log, history)
+
+    def test_approving_does_not_log_a_reset(self):
+        self.login('audit')
+        self.approve_shifts()
+        self.close_day()
+        self.login('collector')
+        self.collector_counts()
+        self.assertFalse(ActivityLog.objects.filter(action='review_reset').exists())
 
     def test_collector_approve_handover_keeps_the_approval(self):
         self.login('audit')

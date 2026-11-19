@@ -5,6 +5,29 @@ from django.contrib.auth.models import User
 from .constants import DENOMS, AED_DENOMS, DELIVERY_SOURCES, SHIFT_CHOICES
 
 
+def _log_review_reset(entry):
+    """An approved sales review just went back to Sales Review. Nothing in the normal flow does
+    this (a waiter request replaces the shift with a NEW one instead), so record who did it and
+    from where in the code, to find the cause if it ever happens. Never blocks the save."""
+    import inspect
+    import os
+    try:
+        user, where = None, []
+        for frame in inspect.stack(context=0)[2:]:
+            if 'salesapp' in frame.filename and len(where) < 4:
+                where.append(f'{os.path.basename(frame.filename)}:{frame.lineno} {frame.function}')
+            request = frame.frame.f_locals.get('request')
+            if user is None and getattr(getattr(request, 'user', None), 'is_authenticated', False):
+                user = request.user
+        ActivityLog.objects.create(
+            user=user, username_snapshot=user.username if user else '', action='review_reset',
+            description=entry.reference_id,
+            details='The approved sales review was removed: the shift is back in Sales Review.\n'
+                    'Where: ' + (' <- '.join(where) or 'outside the app (shell / admin)'))
+    except Exception:
+        pass
+
+
 def _fmt12(t):
     """A time of day the way people say it: 10:00 AM, 3:30 PM, 12:00 AM."""
     return f'{t.hour % 12 or 12}:{t.minute:02d} {"AM" if t.hour < 12 else "PM"}'
@@ -238,6 +261,9 @@ class ShiftEntry(models.Model):
     class Meta:
         ordering = ['-created_at']
 
+    # The fields recalculate() fills in (written alone when only the totals change).
+    COMPUTED_FIELDS = ['cash_total', 'staff_discount', 'visa_total', 'delivery_total', 'actual_total', 'variance']
+
     def recalculate(self):
         """Server-side auto-calculation — never trust client-side totals.
         Cash and delivery totals are stored net of their own cancellations
@@ -339,7 +365,12 @@ class ShiftEntry(models.Model):
             prefix = self.branch.code or f'BR{self.branch.id}'
             existing_count = ShiftEntry.objects.filter(branch=self.branch).count()
             self.reference_id = f'{prefix}-{existing_count + 1:04d}'
+        fields = kwargs.get('update_fields')
+        review_reset = bool(self.pk and not self.is_audited and (fields is None or 'is_audited' in fields)
+                            and ShiftEntry.objects.filter(pk=self.pk, is_audited=True).exists())
         super().save(*args, **kwargs)
+        if review_reset:
+            _log_review_reset(self)
 
     def __str__(self):
         return f'{self.branch} / {self.date} / Shift {self.shift}'
@@ -412,11 +443,13 @@ class CollectorHandover(models.Model):
                 'cash_counts_aed': dict(self.cash_counts_aed),
             }
         super().save(*args, **kwargs)
-        # Keep the shift's final totals / variance in step with the collector's count.
+        # Keep the shift's final totals / variance in step with the collector's count. Only the
+        # computed totals are written, so an out-of-date copy of the shift can never overwrite
+        # anything else on it (e.g. undo Audit's sales review approval).
         entry = self.shift_entry
         entry.__dict__.pop('collector', None)
         entry._state.fields_cache.pop('collector', None)
-        entry.save()
+        entry.save(update_fields=ShiftEntry.COMPUTED_FIELDS)
 
     def has_difference(self, threshold):
         return abs(self.diff_from_waiter) > threshold
@@ -552,6 +585,7 @@ class ActivityLog(models.Model):
         ('bank_deposit_deleted', 'Bank Deposit Deleted'),
         ('bank_deposit_approved', 'Bank Deposit Approved'),
         ('bank_deposit_reopened', 'Bank Deposit Reopened'),
+        ('review_reset', 'Sales Review Reset'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='activity_logs')

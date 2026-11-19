@@ -1333,7 +1333,7 @@ def dashboard_view(request):
     if selected_entry:
         sales_history = list(
             ActivityLog.objects.filter(
-                description=selected_entry.reference_id, action='entry_audited',
+                description=selected_entry.reference_id, action__in=['entry_audited', 'review_reset'],
             ).order_by('-created_at')
         )
         cash_history = list(
