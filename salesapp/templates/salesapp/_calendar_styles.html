@@ -1,0 +1,70 @@
+<style>
+  .cal-monthbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+  .cal-monthbar .nav { display:flex; align-items:center; gap:8px; }
+  .cal-monthbar .label { font-weight:700; font-size:15px; color:#1F3B4D; min-width:130px; text-align:center; }
+  .cal-nav { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border:1px solid #D8D5CB; border-radius:8px; background:#FBFAF7; color:#1F3B4D; text-decoration:none; font-weight:700; font-size:18px; }
+  .cal-sub { font-size:12px; color:#8A8578; }
+  .cal-grid { display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); gap:8px; }
+  .cal-dow { text-align:center; font-size:11px; font-weight:700; color:#8A8578; letter-spacing:0.5px; padding:4px 0; }
+  .cal-day { display:block; min-height:84px; border:1px solid #E7E4DB; border-radius:10px; padding:8px; background:#FBFAF7; text-decoration:none; color:#20242A; box-sizing:border-box; position:relative; }
+  .cal-day:hover { border-color:#1F3B4D; }
+  .cal-day.missing { background:#FDF1EF; border-color:#F0C4BD; }
+  .cal-day.progress { background:#F2F6FA; border-color:#C9D8E6; }
+  .cal-day.done { background:#EFF7F2; border-color:#BFDDCB; }
+  .cal-day.selected { box-shadow:0 0 0 2px #1F3B4D; }
+  .cal-day .num { display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:14px; margin-bottom:6px; }
+  .cal-day .num .today { font-size:10px; font-weight:700; background:#1F3B4D; color:#fff; border-radius:20px; padding:1px 7px; }
+  .cal-chips { display:flex; flex-wrap:wrap; gap:4px; }
+  .cal-chip { position:relative; display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:22px; padding:0 6px; border-radius:6px; font-size:12px; font-weight:800; box-sizing:border-box; cursor:default; }
+  /* the stage name, shown at once on hover (no browser tooltip delay) */
+  .cal-chip::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%); white-space:nowrap; background:#1C1917; color:#fff; font-size:11px; font-weight:600; padding:4px 8px; border-radius:6px; pointer-events:none; opacity:0; z-index:20; }
+  .cal-chip:hover::after { opacity:1; }
+  .cal-legend { display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12px; color:#5C5A52; margin-bottom:12px; }
+  .cal-legend span { display:inline-flex; align-items:center; gap:6px; }
+  .cal-legend .cal-chip { min-width:14px; width:14px; height:14px; padding:0; border-radius:4px; }
+  .chip-missing { background:#FBE3DF; color:#B94A3F; }
+  .chip-awaiting_sales { background:#FCEBD9; color:#C46F1F; }
+  .chip-awaiting_collection { background:#E1ECF7; color:#2F6690; }
+  .chip-awaiting_cash_approval { background:#ECE6F6; color:#6B4FA0; }
+  .chip-complete { background:#DDF0E5; color:#1F8A5C; }
+  .chip-not_sent { background:#EFEDE5; color:#8A8578; }
+  .cal-quiet { font-size:11px; font-weight:600; color:#A29E92; }
+  .cal-flags { display:flex; flex-wrap:wrap; gap:3px; margin-top:4px; }
+  .cal-flag { font-size:9.5px; font-weight:700; padding:1px 6px; border-radius:20px; background:#E7E4DB; color:#5C5A52; }
+  .cal-flag.variance { background:#B94A3F; color:#fff; }
+  .cal-flag.request { background:#E8C98A; color:#854F0B; }
+  .st-missing { color:#B94A3F; }
+  .st-awaiting_sales { color:#C46F1F; }
+  .st-awaiting_collection { color:#2F6690; }
+  .st-awaiting_cash_approval { color:#6B4FA0; }
+  .st-complete { color:#1F8A5C; }
+  .st-not_sent { color:#8A8578; }
+  .stage-pill { display:inline-block; font-size:12px; font-weight:700; padding:2px 10px; border-radius:20px; background:#F0EEE7; }
+  .day-panel { margin-top:16px; border:1px solid #E7E4DB; border-radius:12px; padding:16px; background:#fff; }
+  .panel-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+  .panel-label { font-size:11px; font-weight:700; letter-spacing:0.6px; color:#8A8578; }
+  .action-box { margin-top:14px; background:#F5F3EC; border:1px solid #E7E4DB; border-radius:10px; padding:14px; }
+  .action-box h4 { margin:0 0 6px; font-size:14px; color:#1F3B4D; }
+  .action-box .hint { font-size:12px; color:#6F6A5C; margin-bottom:10px; }
+  .action-box.locked { opacity:0.65; }
+  .action-box.cash-box.locked { opacity:0.8; }   /* the faded cash table must still be readable */
+  .cal-embed { padding:14px 16px; }
+  .cal-modal { position:fixed; inset:0; z-index:1000; background:rgba(28,25,23,.55); display:none; align-items:center; justify-content:center; padding:20px; }
+  .cal-modal.open { display:flex; }
+  .cal-modal-box { background:#fff; border-radius:18px; max-width:480px; width:100%; padding:26px 26px 22px; box-shadow:0 18px 50px rgba(0,0,0,.25); max-height:90vh; overflow-y:auto; }
+  .cal-modal-box h3 { margin:0 0 12px; font-size:19px; color:#1F3B4D; }
+  .cal-modal-box p { margin:0 0 10px; font-size:14px; line-height:1.6; color:#3D3A31; }
+  .cal-modal-box p.muted { color:#6F6A5C; font-size:13px; }
+  .cal-modal-meta { background:#F5F3EC; border-radius:10px; padding:10px 14px; margin:0 0 12px; font-size:14px; color:#1F3B4D; }
+  .cal-modal-table { width:100%; margin:0 0 12px; font-size:14px; }
+  .cal-modal-table tfoot td { font-weight:700; color:#1F3B4D; background:#F0EEE7; }
+  .cal-modal-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:18px; }
+  .cal-embed .cal-loading { color:#8A8578; font-size:13px; padding:20px 0; }
+  @media (max-width: 760px) {
+    .cal-grid { gap:4px; }
+    .cal-day { min-height:64px; padding:5px; }
+    .cal-chip { min-width:18px; height:18px; padding:0 4px; font-size:10.5px; }
+    .cal-flag { font-size:8.5px; padding:0 4px; }
+    .cal-embed { padding:10px 8px; }
+  }
+</style>

@@ -22,6 +22,9 @@ class Branch(models.Model):
     # How many shifts the branch runs per day. The day can be closed (Foodics for the
     # whole day) once shifts 1..N have all been submitted and approved by Audit.
     shifts_per_day = models.PositiveSmallIntegerField(default=3)
+    # The first business day the branch reports in this system. The Calendar counts a day with
+    # no report as Missing only from this date on. Left empty: the date of its first report.
+    start_date = models.DateField(null=True, blank=True)
 
     class Meta:
         ordering = ['name']

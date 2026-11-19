@@ -16,8 +16,8 @@ python manage.py create_admin <username> <password>   # إنشاء أول حسا
 python manage.py runserver                 # http://127.0.0.1:8000/login/
 
 python manage.py test salesapp                                          # كل الاختبارات
-python manage.py test salesapp.tests.WaiterStatusTests                  # فئة واحدة
-python manage.py test salesapp.tests.WaiterStatusTests.test_other_days_do_not_count  # اختبار واحد
+python manage.py test salesapp.tests.CalendarStageTests                  # فئة واحدة
+python manage.py test salesapp.tests.CalendarStageTests.test_full_day_moves_through_every_stage  # اختبار واحد
 
 python manage.py makemigrations salesapp   # بعد أي تعديل على النماذج
 ```
@@ -47,6 +47,8 @@ python manage.py makemigrations salesapp   # بعد أي تعديل على ال�
 **سجل التعديلات.** عند أول حفظ، يحتفظ النموذجان بـ `original_snapshot`. تصحيحات التدقيق تُقارن بهذه النسخة (`_shift_field_diffs`، `_compute_handover_changes`) وتُعرض بصيغة "تغيّر من X إلى Y". أي إجراء مهم يجب أن يستدعي `log_activity(request, action, description, details=...)`. قيمة `action` يجب أن تكون من `ActivityLog.ACTION_CHOICES`، وإضافة قيمة جديدة تتطلب migration.
 
 **تاريخ العمل.** لكل فرع ساعات عمل (`day_cutoff` ← `day_end`)، وقد تمتد بعد منتصف الليل. الدالة `Branch.business_date()` تحدد التاريخ الذي ينتمي له التقرير. التقرير المرسل بعد الإغلاق يُحسب لليوم التالي ويُعلَّم بـ `submitted_late`. استخدم هذه الدالة بدلًا من `timezone.localdate()` كلما احتجت تاريخ تقرير فرع.
+
+**كالندر الفرع (صفحة الأوديت).** فتح فرع في `/dashboard/` يجلب `branch_calendar_view` (`/dashboard/calendar/`)، والذي يرجّع جزء القالب `_calendar_body.html` فقط: شهر فيه عدد الشفتات في كل مرحلة لكل يوم عمل، وكاردات الاعتماد لليوم المختار. الكاردات ترسل للـ views الموجودة (`approve_all`، `close_day`، `cash_reconcile_action`، `collector_approve_all`) مع `next` يعيد فتح نفس الفرع واليوم (`?cal_branch=&cal_month=&cal_day=`). هذه الـ views تفضّل `_safe_next(request)` على رجوعها الافتراضي، فحافظ على هذا عند تعديلها. اليوم يُحسب Missing فقط من `Branch.start_date` (أو من أول تقرير للفرع إذا كان فارغًا). في الكالندر يبقى الشفت في Sales Review لين يتسكّر يومه (`_calendar_stage`)؛ وفي باقي النظام المرحلة تأتي من `_entry_stage`.
 
 **وحدات أخرى:** `BankDeposit` (مع `BankDepositEvent`/`BankDepositFile`) هو الإيداع البنكي الدوري الذي يقوم به المحصّل ويغطي فترة من نقد الفروع، مع إمكانية استثناء فروع ومسار إرجاع/اعتماد. `WaiterResetLink` يوفّر روابط إعادة تعيين كلمة المرور للـ waiters عبر رمز (token). تقرير المبيعات اليومي متاح كصفحة HTML وكملف Excel (عبر openpyxl). الملفات المرفوعة تُحفظ في `media/` (مستثنى من git).
 

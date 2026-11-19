@@ -10,6 +10,7 @@ urlpatterns = [
     path('bank-deposits/cash/', views.bank_deposit_cash_view, name='bank_deposit_cash'),
     path('bank-deposits/<int:deposit_id>/edit/', views.bank_deposit_form_view, name='bank_deposit_edit'),
     path('dashboard/', views.dashboard_view, name='dashboard'),
+    path('dashboard/calendar/', views.branch_calendar_view, name='branch_calendar'),
     path('reports/daily-sales/', views.daily_sales_report_view, name='daily_sales_report'),
     path('reports/daily-sales/excel/', views.daily_sales_report_xlsx_view, name='daily_sales_report_xlsx'),
     path('settings/cutoff/', views.audit_settings_view, name='audit_settings'),

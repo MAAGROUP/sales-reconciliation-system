@@ -2,6 +2,17 @@
 {% load app_filters %}
 {% block content %}
 <style>input[readonly]{background:#F3F1EA !important; color:#6F6A5C; cursor:not-allowed;}</style>
+{% include "salesapp/_calendar_styles.html" %}
+<div id="calConfirmModal" class="cal-modal" role="dialog" aria-modal="true" aria-labelledby="calConfirmTitle">
+  <div class="cal-modal-box">
+    <h3 id="calConfirmTitle"></h3>
+    <div id="calConfirmBody"></div>
+    <div class="cal-modal-actions">
+      <button type="button" class="btn secondary" id="calConfirmCancel">Cancel</button>
+      <button type="button" class="btn" id="calConfirmOk"></button>
+    </div>
+  </div>
+</div>
 
 {% if pending_requests %}
 <div class="card" style="background:#FAEEDA; border:1px solid #E8C98A;">
@@ -59,81 +70,14 @@
   </form>
 
   {% for group in branch_groups %}
-  <div class="branch-item" data-index="{{ forloop.counter0 }}" style="margin-top:12px; border:1px solid #E7E4DB; border-radius:10px; overflow:hidden;">
+  <div class="branch-item" id="calBranch{{ group.branch.id }}" data-index="{{ forloop.counter0 }}" data-branch-id="{{ group.branch.id }}" data-group="audit-group-{{ forloop.counter }}" style="margin-top:12px; border:1px solid #E7E4DB; border-radius:10px; overflow:hidden;">
     <div onclick="toggleAuditGroup('audit-group-{{ forloop.counter }}')" style="display:flex; align-items:center; gap:16px; padding:12px 16px; background:#F0EEE7; cursor:pointer; flex-wrap:wrap;">
       <span id="arrow-audit-group-{{ forloop.counter }}" style="font-size:11px; color:#1F3B4D; display:inline-block; transition:transform 0.15s;">&#9654;</span>
       <strong style="flex:0 0 160px; font-size:14px; color:#1F3B4D;">{{ group.branch.name }}</strong>
       <span style="font-size:12px; margin-left:auto; color:#1F3B4D;">Sales Actual <strong>{{ group.total_actual|floatformat:3 }}</strong></span>
     </div>
-    <div id="audit-group-{{ forloop.counter }}" style="display:none; overflow-x:auto;">
-    <table style="margin:0;">
-      <thead>
-        <tr>
-          <th>Submit Request No.</th><th>Date</th><th>Shift</th><th>Submitted By</th>
-          <th>Sales Actual</th><th title="Foodics is entered once per day, on the day's last shift">Foodics (day)</th><th>Variance (day)</th>
-          <th>Stage</th><th>Note</th><th></th><th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in group.rows %}
-        {% if row.show_date_divider %}
-        <tr data-branch="{{ forloop.parentloop.counter0 }}" data-dategroup="{{ row.date_group }}">
-          <td colspan="11" style="padding:10px 8px 4px; border-bottom:none;">
-            <div style="display:flex; align-items:center; gap:10px;">
-              <div style="flex:1; border-top:3px solid #F0EEE7;"></div>
-              <strong style="font-size:12px; color:#1F3B4D; white-space:nowrap;">{{ row.entry.date }}</strong>
-            </div>
-          </td>
-        </tr>
-        {% endif %}
-        <tr data-branch="{{ forloop.parentloop.counter0 }}" data-dategroup="{{ row.date_group }}" {% if selected_entry and selected_entry.id == row.entry.id %}style="background:#F0EEE7;"{% endif %}>
-          <td><strong>{{ row.entry.reference_id }}</strong></td>
-          <td>{{ row.entry.date }}</td>
-          <td>Shift {{ row.entry.shift }}</td>
-          <td>{% include "salesapp/_submitter.html" with name=row.entry.accountant punch=row.entry.submitted_punch %}</td>
-          <td>{{ row.entry.sales_actual }} RO</td>
-          <td>{% if row.day %}{{ row.day.expected_foodics }} RO{% else %}-{% endif %}</td>
-          <td>{% if row.day %}<span style="{% if row.has_issue %}color:#B94A3F; font-weight:700;{% endif %}">{{ row.day_variance }} RO</span>{% else %}-{% endif %}</td>
-          <td>
-            {% if row.stage == 'complete' %}
-              <span class="badge ok">Complete</span>
-            {% elif row.stage == 'awaiting_cash_approval' %}
-              <span class="badge ok" style="background:#E6F1FB; color:#185FA5;">Awaiting Cash Approval</span>
-            {% elif row.stage == 'awaiting_collection' %}
-              <span class="badge flag" style="background:#F0EEE7; color:#8A8578;">Awaiting Collection</span>
-            {% else %}
-              <span class="badge flag">Awaiting Sales Review</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if row.entry.audit_notes %}
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#D4A843" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" title="Has a note"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
-            {% endif %}
-          </td>
-          <td>
-            <a href="?entry_id={{ row.entry.id }}&{% for s in shift_filter %}shift_filter={{ s }}&{% endfor %}{{ branch_qs|safe }}{{ stage_qs|safe }}{% if date_from %}date_from={{ date_from }}&{% endif %}{% if date_to %}date_to={{ date_to }}{% endif %}" class="icon-btn edit" title="Select">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-            </a>
-          </td>
-          <td>
-            <form method="post" action="{% url 'archive_entry' row.entry.id %}" style="display:inline;" onsubmit="return confirm('Archive {{ row.entry.reference_id }}?');">
-              {% csrf_token %}
-              <button type="submit" class="icon-btn delete" title="Archive">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-              </button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% if group.date_group_count > 2 %}
-    <div style="padding:10px 16px;">
-      <button type="button" class="btn secondary small" id="showMoreDatesBtn-{{ forloop.counter0 }}"
-              data-branch-total="{{ group.date_group_count }}"
-              onclick="showMoreDates({{ forloop.counter0 }})">Show More Dates</button>
-    </div>
-    {% endif %}
+    <div id="audit-group-{{ forloop.counter }}" style="display:none;">
+    <div class="cal-embed" data-src="{% url 'branch_calendar' %}?branch={{ group.branch.id }}"><div class="cal-loading">Loading calendar…</div></div>
     </div>
   </div>
   {% empty %}
@@ -148,9 +92,7 @@
 
 <script>
 const BRANCH_STEPS = [10, 15, 20, 25];
-const DATE_STEPS = [2, 4, 7, 10];
 let branchStepIndex = 0;
-const dateStepIndex = {};
 
 function updateBranchVisibility(){
   const items = document.querySelectorAll('.branch-item');
@@ -169,30 +111,8 @@ function showMoreBranches(){
   updateBranchVisibility();
 }
 
-function updateDateVisibility(branchIdx){
-  const stepIdx = dateStepIndex[branchIdx] || 0;
-  const limit = stepIdx < DATE_STEPS.length ? DATE_STEPS[stepIdx] : Infinity;
-  document.querySelectorAll(`tr[data-branch="${branchIdx}"][data-dategroup]`).forEach(el => {
-    const dg = parseInt(el.dataset.dategroup, 10);
-    el.style.display = dg < limit ? '' : 'none';
-  });
-  const btn = document.getElementById('showMoreDatesBtn-' + branchIdx);
-  if(btn){
-    const total = parseInt(btn.dataset.branchTotal, 10);
-    btn.style.display = (limit >= total) ? 'none' : '';
-  }
-}
-function showMoreDates(branchIdx){
-  dateStepIndex[branchIdx] = (dateStepIndex[branchIdx] || 0) + 1;
-  updateDateVisibility(branchIdx);
-}
-
 document.addEventListener('DOMContentLoaded', function(){
   updateBranchVisibility();
-  document.querySelectorAll('[id^="showMoreDatesBtn-"]').forEach(btn => {
-    const branchIdx = btn.id.replace('showMoreDatesBtn-', '');
-    updateDateVisibility(branchIdx);
-  });
 });
 </script>
 
@@ -220,12 +140,20 @@ document.addEventListener('DOMContentLoaded', function(){
     const foodics = document.getElementById('dayFoodicsInput');
     if (foodics && !foodics.disabled) foodics.focus({preventScroll: true});
   }
-  // After approving cash: land on the card that was used (Day Cash, or the shift's own cash card).
+  // After approving cash or correcting the collector's count: land on the card that was used.
   // If the Day Cash card is gone (nothing left to approve), fall back to the shift's cash card.
-  if (location.hash === '#dayCashCard' || location.hash === '#stepCashCollected') {
+  if (['#dayCashCard', '#stepCashCollected', '#collectorCountCard'].includes(location.hash)) {
     const card = document.getElementById(location.hash.slice(1)) || document.getElementById('stepCashCollected');
     if (card) {
       if (document.getElementById('tabBtnCashA')) showAuditTab('cash');
+      card.scrollIntoView({block: 'start'});
+    }
+  }
+  // After approving a shift's sales review, or deciding a waiter request: back on that card.
+  if (location.hash === '#stepSalesReviewed' || location.hash === '#requestCard') {
+    const card = document.getElementById(location.hash.slice(1));
+    if (card) {
+      if (location.hash === '#stepSalesReviewed' && document.getElementById('tabBtnSalesA')) showAuditTab('sales');
       card.scrollIntoView({block: 'start'});
     }
   }
@@ -239,7 +167,105 @@ function toggleAuditGroup(id){
   const isOpen = el.style.display === 'block';
   el.style.display = isOpen ? 'none' : 'block';
   arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+  if (!isOpen) {
+    const cal = el.querySelector('.cal-embed');
+    if (cal && !cal.dataset.loaded) loadBranchCalendar(cal, cal.dataset.src);
+  }
 }
+
+// ----- Branch calendar inside each branch (loaded in place, no page reload) -----
+// Close Day: the variance as the Foodics figure is typed (the server recomputes it on save).
+function calVariance(inp){
+  const box = inp.closest('.close-day-box');
+  const out = box.querySelector('.cal-variance');
+  const strip = box.querySelector('.cal-variance-strip');
+  if (inp.value === '' || isNaN(parseFloat(inp.value))) { out.textContent = '—'; strip.classList.remove('flag'); return; }
+  const v = parseFloat(inp.dataset.actual) - parseFloat(inp.value);
+  out.textContent = v.toFixed(3) + ' RO';
+  strip.classList.toggle('flag', Math.abs(v) > parseFloat(inp.dataset.threshold));
+}
+// Approve Shifts / Approve Cash: ask in the system's own popup (content from the form's <template>).
+let calPendingForm = null, calLastFocus = null;
+function calConfirm(btn){
+  const form = btn.closest('form'), tpl = form.querySelector('template.cal-confirm');
+  const modal = document.getElementById('calConfirmModal');
+  document.getElementById('calConfirmTitle').textContent = tpl.dataset.title;
+  document.getElementById('calConfirmBody').innerHTML = tpl.innerHTML;
+  const ok = document.getElementById('calConfirmOk');
+  ok.textContent = tpl.dataset.ok; ok.disabled = false;
+  calPendingForm = form; calLastFocus = btn;
+  modal.classList.add('open');
+  document.getElementById('calConfirmCancel').focus();
+}
+function calConfirmClose(){
+  document.getElementById('calConfirmModal').classList.remove('open');
+  calPendingForm = null;
+  if (calLastFocus) calLastFocus.focus();
+}
+document.addEventListener('DOMContentLoaded', function(){
+  const modal = document.getElementById('calConfirmModal');
+  document.getElementById('calConfirmCancel').addEventListener('click', calConfirmClose);
+  modal.addEventListener('click', ev => { if (ev.target === modal) calConfirmClose(); });
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && modal.classList.contains('open')) calConfirmClose(); });
+  document.getElementById('calConfirmOk').addEventListener('click', function(){
+    if (!calPendingForm) return;
+    this.disabled = true;            // no double submit
+    calPendingForm.submit();
+  });
+});
+// Close Day on a closed day: unlock the Foodics figure and note for a re-close.
+function calEditFoodics(btn){
+  const box = btn.closest('.close-day-box');
+  box.querySelectorAll('.cal-foodics, .cal-day-note').forEach(el => el.readOnly = false);
+  btn.style.display = 'none';
+  box.querySelector('.cal-reclose-btn').style.display = '';
+  const f = box.querySelector('.cal-foodics');
+  f.focus(); f.select();
+}
+function loadBranchCalendar(box, url, scrollToPanel, focusFoodics){
+  box.dataset.loaded = '1';
+  fetch(url, {credentials: 'same-origin'})
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
+    .then(html => {
+      box.innerHTML = html;
+      const panel = box.querySelector('.day-panel');
+      const closeBox = box.querySelector('.close-day-box');
+      if (focusFoodics && closeBox) {
+        closeBox.scrollIntoView({block: 'center'});
+        const f = closeBox.querySelector('.cal-foodics');
+        if (f && !f.disabled && !f.readOnly) f.focus({preventScroll: true});
+      } else if (scrollToPanel && panel) {
+        panel.scrollIntoView({block: 'start', behavior: 'smooth'});
+      }
+    })
+    .catch(() => { box.dataset.loaded = ''; box.innerHTML = '<div class="cal-loading">Could not load the calendar. Close and open the branch again.</div>'; });
+}
+document.addEventListener('click', function(ev){
+  const link = ev.target.closest('.cal-embed a.cal-link');
+  if (!link) return;
+  ev.preventDefault();
+  const box = link.closest('.cal-embed');
+  const isDay = link.classList.contains('cal-day');
+  loadBranchCalendar(box, link.getAttribute('href'), isDay);
+});
+// Back from an approve card (?cal_branch=..&cal_month=..&cal_day=..): reopen that branch on that day.
+document.addEventListener('DOMContentLoaded', function(){
+  const q = new URLSearchParams(location.search);
+  const bid = q.get('cal_branch');
+  if (!bid) return;
+  const item = document.querySelector('.branch-item[data-branch-id="' + bid + '"]');
+  if (!item) return;
+  item.style.display = '';
+  const group = document.getElementById(item.dataset.group);
+  const box = group.querySelector('.cal-embed');
+  let url = box.dataset.src;
+  if (q.get('cal_month')) url += '&month=' + encodeURIComponent(q.get('cal_month'));
+  if (q.get('cal_day')) url += '&day=' + encodeURIComponent(q.get('cal_day'));
+  group.style.display = 'block';
+  const arrow = document.getElementById('arrow-' + item.dataset.group);
+  if (arrow) arrow.style.transform = 'rotate(90deg)';
+  loadBranchCalendar(box, url, true, q.get('cal_focus') === 'foodics');
+});
 </script>
 
 {% if selected_entry %}
@@ -252,7 +278,7 @@ function toggleAuditGroup(id){
   Back
 </a>
 {% if selected_entry and selected_entry.request_status == 'pending' %}
-<div class="card" style="background:#FAEEDA; border:2px solid #E8C98A;">
+<div class="card" id="requestCard" style="background:#FAEEDA; border:2px solid #E8C98A;">
   <h3 style="color:#854F0B;">Waiter request · {{ selected_entry.request_reason }}</h3>
   <p style="color:#854F0B; font-size:13px; margin-top:0;">{{ selected_entry.accountant }} sent {{ selected_entry.get_shift_display }} for {{ selected_entry.date }} after it was no longer open. It counts nowhere until you decide. Approving makes it the live shift (a live shift with the same number is archived) and the day needs a re-close.</p>
   {% if not is_viewer %}
@@ -270,7 +296,7 @@ function toggleAuditGroup(id){
   {% endif %}
 </div>
 {% elif selected_entry and selected_entry.request_status == 'rejected' %}
-<div class="card" style="background:#FBE9E6;"><strong style="color:#B94A3F;">This waiter request was rejected.</strong>{% if selected_entry.request_decision_note %}<div style="margin-top:6px; font-size:13px; color:#1F3B4D;"><b>Audit note:</b> {{ selected_entry.request_decision_note }}</div>{% endif %}</div>
+<div class="card" id="requestCard" style="background:#FBE9E6;"><strong style="color:#B94A3F;">This waiter request was rejected.</strong>{% if selected_entry.request_decision_note %}<div style="margin-top:6px; font-size:13px; color:#1F3B4D;"><b>Audit note:</b> {{ selected_entry.request_decision_note }}</div>{% endif %}</div>
 {% endif %}
 
 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px 14px; background:#F7F5EE; border:1px solid #E7E4DB; border-radius:10px; padding:10px 14px; margin-bottom:14px; font-size:13px; color:#6F6A5C;">
@@ -583,7 +609,7 @@ function toggleAuditGroup(id){
   </script>
   {% endif %}
 </div>
-{% include "salesapp/_history_card.html" with history=day_history title="Day Close History" %}
+{% include "salesapp/_history_card.html" with history=sales_day_history title="Sales Review & Day Close History" show_for=True %}
 <div class="card">
   <h3>Collector History — {{ day_status.branch.name }} · {{ day_status.date }}</h3>
   <p style="color:#8A8578; font-size:13px; margin-top:0;">Everything the collector did for all shifts of this day: cash counts, changes and approvals.</p>
@@ -609,8 +635,6 @@ function toggleAuditGroup(id){
   {% endif %}
 </div>
 {% endif %}
-
-{% include "salesapp/_history_card.html" with history=sales_history title="Sales History" %}
 
 </div>
 
@@ -832,8 +856,8 @@ calcAll();
   {% csrf_token %}
   <input type="hidden" name="shift_entry_id" value="{{ selected_entry.id }}">
   <input type="hidden" name="collector_name" value="{{ selected_handover.collector_name }}">
-  <input type="hidden" name="next" value="{{ request.get_full_path }}">
-  <div class="card">
+  <input type="hidden" name="next" value="{{ request.get_full_path }}#collectorCountCard">
+  <div class="card" id="collectorCountCard">
     <h3>Collector's Count</h3>
     <div style="font-size:12px; color:#8A8578; margin:-2px 0 12px;">{% if handover_changes %}{{ handover_changes|length }} field{{ handover_changes|length|pluralize }} marked <b style="color:#1F8A5C;">Audited</b> — different from the waiter's count, or edited after the first save.{% elif selected_handover %}Matches the waiter's count. Any number that differs from it, or is edited later, is marked <b style="color:#1F8A5C;">Audited</b>.{% else %}Not counted yet.{% endif %}</div>
     <div class="grid grid-2">

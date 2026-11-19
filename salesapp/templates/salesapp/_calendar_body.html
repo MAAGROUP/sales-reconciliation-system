@@ -1,0 +1,245 @@
+{% comment %}
+  The calendar of one branch + month and the selected day's panel, loaded inside a branch on
+  the Audit page. Links with class "cal-link" are loaded in place by the Audit page's script.
+{% endcomment %}
+<div class="cal-body">
+  <div class="cal-monthbar">
+    <div class="nav">
+      <a class="cal-nav cal-link" href="{{ prev_url }}" title="Previous month">&lsaquo;</a>
+      <span class="label">{{ month|date:"F Y" }}</span>
+      <a class="cal-nav cal-link" href="{{ next_url }}" title="Next month">&rsaquo;</a>
+    </div>
+    <div class="cal-sub">{{ n_shifts }} shift{{ n_shifts|pluralize }}/day ·
+      {% if start %}counting from {{ start|date:"M d, Y" }}{% if not start_is_set %} (first report){% endif %}{% else %}no reports yet{% endif %}</div>
+  </div>
+  {# What each color means — kept on screen while the team gets used to the calendar. #}
+  <div class="cal-legend">
+    <span><i class="cal-chip chip-missing"></i>Missing</span>
+    <span><i class="cal-chip chip-awaiting_sales"></i>Sales Review (until the day is closed)</span>
+    <span><i class="cal-chip chip-awaiting_collection"></i>Collection</span>
+    <span><i class="cal-chip chip-awaiting_cash_approval"></i>Cash Approval</span>
+    <span><i class="cal-chip chip-complete"></i>Complete</span>
+    <span><i class="cal-chip chip-not_sent"></i>Not sent yet (today)</span>
+  </div>
+
+  <div class="cal-grid">
+    <div class="cal-dow">SUN</div><div class="cal-dow">MON</div><div class="cal-dow">TUE</div><div class="cal-dow">WED</div><div class="cal-dow">THU</div><div class="cal-dow">FRI</div><div class="cal-dow">SAT</div>
+    {% for _ in lead_blanks %}<div></div>{% endfor %}
+    {% for d in days %}
+    <a href="{{ d.url }}" class="cal-day cal-link {{ d.tone }}{% if d.selected %} selected{% endif %}">
+      <div class="num"><span>{{ d.date.day }}</span>{% if d.is_today %}<span class="today">Today</span>{% endif %}</div>
+      {% if d.chips or d.waiting_today %}
+      <div class="cal-chips">
+        {% for key, label, count in d.chips %}<span class="cal-chip chip-{{ key }}" data-tip="{{ label }}: {{ count }} shift{{ count|pluralize }}">{{ count }}</span>{% endfor %}
+        {% if d.waiting_today %}<span class="cal-chip chip-not_sent" data-tip="Not sent yet: {{ d.waiting_today }} shift{{ d.waiting_today|pluralize }}">{{ d.waiting_today }}</span>{% endif %}
+      </div>
+      {% endif %}
+      {% if not d.chips and not d.waiting_today %}
+        <div class="cal-quiet">{% if d.kind == 'future' %}Not due{% elif d.kind == 'before' %}—{% endif %}</div>
+      {% endif %}
+      {% if d.flagged or d.request %}
+      <div class="cal-flags">
+        {% if d.flagged %}<span class="cal-flag variance">Variance</span>{% endif %}
+        {% if d.request %}<span class="cal-flag request">Request</span>{% endif %}
+      </div>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  <div class="cal-sub" style="margin-top:12px;">Hover a number to see its stage. A shift stays in Sales Review until the day is closed (Foodics entered). <b>Variance</b> = the day's difference is over {{ variance_threshold }} RO · <b>Request</b> = a waiter request is waiting. Click a day to see its shifts.</div>
+
+  {% if panel %}
+  <div class="day-panel">
+    <div class="panel-head">
+      <div>
+        <div class="panel-label">SELECTED DAY</div>
+        <h3 style="margin:2px 0 12px;">{{ panel.date|date:"l, F j, Y" }}</h3>
+      </div>
+      <a href="{{ panel.close_url }}" class="btn secondary small cal-link" style="text-decoration:none;">Close</a>
+    </div>
+
+    <div style="overflow-x:auto;">
+    <table style="margin:0;">
+      <thead><tr><th>Shift</th><th>Reference</th><th>Stage</th><th>Waiter Cash</th><th>Collector Cash</th><th>Visa</th><th>Sales Actual</th><th></th></tr></thead>
+      <tbody>
+      {% for r in panel.rows %}
+        <tr>
+          <td style="white-space:nowrap;">Shift {{ r.shift }}</td>
+          {% if r.entry %}
+            <td style="white-space:nowrap;"><a href="/dashboard/?entry_id={{ r.entry.id }}" style="color:#1F3B4D; font-weight:700;">{{ r.entry.reference_id }}</a>{% if r.entry.submitted_late %} <span class="badge flag" style="font-size:10px;">Late</span>{% endif %}</td>
+            <td><span class="stage-pill st-{{ r.stage }}">{{ r.stage_label }}</span></td>
+            <td>{{ r.entry.cash_total|floatformat:3 }}</td>
+            <td>{% if r.collector_cash is not None %}{{ r.collector_cash|floatformat:3 }}{% else %}—{% endif %}</td>
+            <td>{{ r.entry.visa_total|floatformat:3 }}</td>
+            <td>{{ r.entry.sales_actual|floatformat:3 }}</td>
+            <td>{% if panel.show_audit %}<form method="post" action="{% url 'archive_entry' r.entry.id %}" style="display:inline;" onsubmit="return confirm('Archive {{ r.entry.reference_id }}?');">{% csrf_token %}<input type="hidden" name="next" value="{{ panel.next }}"><button type="submit" class="btn secondary small" style="white-space:nowrap;">Archive</button></form>{% endif %}</td>
+          {% else %}
+            <td>—</td>
+            <td><span class="stage-pill st-{{ r.stage }}">{{ r.stage_label }}</span></td>
+            <td colspan="5"></td>
+          {% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div class="total-strip{% if panel.flagged %} flag{% endif %}" style="margin-top:12px;">
+      <span>Day Sales Actual{% if panel.close %} · Foodics {{ panel.close.expected_foodics|floatformat:3 }} · Variance {{ panel.variance|floatformat:3 }}{% endif %}</span>
+      <span>{{ panel.status.total_actual|floatformat:3 }} RO</span>
+    </div>
+
+    {% if panel.show_collect %}
+    <form method="post" action="{% url 'collector' %}" class="action-box{% if not panel.collect_count %} locked{% endif %}">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="collector_approve_all">
+      <input type="hidden" name="shift_entry_id" value="{{ panel.anchor.id }}">
+      <input type="hidden" name="next" value="{{ panel.next }}">
+      <h4>Approve Handover</h4>
+      {% if panel.collect_count %}
+        <div class="hint">Saves the cash of {{ panel.collect_count }} shift{{ panel.collect_count|pluralize }} as collected (a shift you already counted keeps your own count). A shift whose cash differs: open it and save your own count first.</div>
+        <textarea name="approve_note" rows="2" placeholder="Note (optional)" style="max-width:100%;"></textarea>
+        <button type="submit" class="btn" style="margin-top:10px;" onclick="return confirm('Approve the handover of {{ panel.collect_count }} shift(s) for this day?');">Approve Handover</button>
+      {% else %}
+        <div class="hint" style="margin:0;">Every shift of this day is already approved by the collector.</div>
+      {% endif %}
+    </form>
+    {% endif %}
+
+    {% if panel.show_audit %}
+    <form method="post" action="{% url 'dashboard' %}" class="action-box{% if not panel.status.waiting %} locked{% endif %}">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="approve_all">
+      <input type="hidden" name="entry_id" value="{{ panel.anchor.id }}">
+      <input type="hidden" name="next" value="{{ panel.next_foodics }}">
+      <h4>Approve Shifts <span style="font-weight:500; color:#8A8578;">· sales review: cash + visa</span></h4>
+      {% if panel.status.waiting %}
+        <div class="hint">Approves the sales review of shift {{ panel.status.waiting|join:", " }} as they are now. To fix a number, open that shift instead.</div>
+        <textarea name="all_note" rows="2" placeholder="Note for all shifts (optional)" style="max-width:100%;"></textarea>
+        <button type="button" class="btn" style="margin-top:10px;" onclick="calConfirm(this)">Approve Shifts</button>
+        <template class="cal-confirm" data-title="Approve shifts?" data-ok="Approve shifts">
+          <div class="cal-modal-meta"><b>{{ branch.name }}</b> · {{ panel.date|date:"l, M j, Y" }}<br>Shift {{ panel.status.waiting|join:", " }}</div>
+          <p>The sales review (cash + visa) of each shift is approved as it is now, and logged as approved.</p>
+          <p class="muted">You can still open a shift, edit it and approve it again later.</p>
+        </template>
+      {% else %}
+        <div class="hint" style="margin:0;">No shift of this day is waiting for sales review.</div>
+      {% endif %}
+    </form>
+
+
+    <form method="post" action="{% url 'dashboard' %}" class="action-box close-day-box{% if not panel.status.can_close and not panel.close %} locked{% endif %}">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="close_day">
+      <input type="hidden" name="entry_id" value="{{ panel.anchor.id }}">
+      <input type="hidden" name="next" value="{{ panel.next_foodics }}">
+      <h4>Close Day <span style="font-weight:500; color:#8A8578;">· Foodics for the whole day</span></h4>
+      {% if panel.status.can_close or panel.close %}
+        {# Once the day is closed the fields lock; "Edit" unlocks them for a re-close (calEditFoodics). #}
+        <div class="grid grid-2">
+          <div><label>Expected from Foodics (whole day)</label><input name="day_foodics" class="cal-foodics" type="number" step="0.001" required
+               value="{% if panel.close %}{{ panel.close.expected_foodics }}{% endif %}"
+               data-actual="{{ panel.status.total_actual|stringformat:'f' }}" data-threshold="{{ variance_threshold }}"
+               oninput="calVariance(this)" {% if panel.close %}readonly{% elif not panel.status.can_close %}disabled{% endif %}></div>
+          <div><label>Note (optional)</label><input name="day_note" class="cal-day-note" value="{% if panel.close %}{{ panel.close.note }}{% endif %}" {% if panel.close %}readonly{% elif not panel.status.can_close %}disabled{% endif %}></div>
+        </div>
+        <div class="total-strip cal-variance-strip{% if panel.flagged %} flag{% endif %}" style="margin-top:10px;">
+          <span>Variance (Day Sales Actual {{ panel.status.total_actual|floatformat:3 }} − Foodics)</span>
+          <span class="cal-variance">{% if panel.close %}{{ panel.variance|floatformat:3 }} RO{% else %}—{% endif %}</span>
+        </div>
+        {% if panel.close %}
+          <div class="hint" style="margin:8px 0 0;">Closed{% if panel.close.closed_by %} by {{ panel.close.closed_by.get_full_name|default:panel.close.closed_by.username }}{% endif %} · {{ panel.close.updated_at|date:"Y-m-d H:i" }}</div>
+          {% if panel.status.can_close %}
+            <button type="button" class="btn secondary small cal-edit-btn" style="margin-top:10px;" onclick="calEditFoodics(this)">Edit</button>
+            <button type="submit" class="btn cal-reclose-btn" style="margin-top:10px; display:none;">Re-close Day</button>
+          {% else %}
+            <div class="hint" style="margin:8px 0 0;">A shift is waiting for sales review again — approve it to re-close the day.</div>
+          {% endif %}
+        {% else %}
+          <button type="submit" class="btn" style="margin-top:10px;">Close Day</button>
+        {% endif %}
+      {% else %}
+        <div class="hint" style="margin:0;">
+          Can be closed once every shift is submitted and its sales review approved.
+          {% if panel.status.missing %}Not submitted: shift {{ panel.status.missing|join:", " }}.{% endif %}
+          {% if panel.status.waiting %}Waiting for sales review: shift {{ panel.status.waiting|join:", " }}.{% endif %}
+        </div>
+      {% endif %}
+    </form>
+
+    {% if panel.cash %}
+    {% with c=panel.cash %}
+    <form method="post" action="{% url 'cash_reconcile_action' %}" class="action-box cash-box{% if not c.open %} locked{% endif %}">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="approve_matched">
+      <input type="hidden" name="next" value="{{ panel.next }}">
+      {% if c.open %}{% for hid in c.ready_ids %}<input type="hidden" name="handover_id" value="{{ hid }}">{% endfor %}{% endif %}
+      <h4 style="display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px;">
+        <span>Approve Cash <span style="font-weight:500; color:#8A8578;">· cash only</span></span>
+        {% if c.open %}
+          <span class="badge ok" style="font-size:11px;">Collector done · {{ c.collected }}/{{ c.rows|length }}</span>
+        {% else %}
+          <span class="badge flag" style="font-size:11px; background:#F0EEE7; color:#6F6A5C;">&#128274; Waiting for the collector · {{ c.collected }}/{{ c.rows|length }} collected</span>
+        {% endif %}
+      </h4>
+
+      <div style="overflow-x:auto; margin-top:8px;">
+      <table style="margin:0; background:#fff; border-radius:8px;">
+        <thead><tr><th>Shift</th><th>Reference</th><th>Waiter Cash</th><th>Collector Cash</th><th>Difference</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for r in c.rows %}
+          <tr>
+            <td style="white-space:nowrap;">Shift {{ r.entry.shift }}</td>
+            <td style="white-space:nowrap;"><a href="/dashboard/?entry_id={{ r.entry.id }}#stepCashCollected" style="color:#1F3B4D; font-weight:700;">{{ r.entry.reference_id }}</a></td>
+            <td>{{ r.entry.cash_total|floatformat:3 }}</td>
+            <td>{% if r.handover %}{{ r.handover.cash_total|floatformat:3 }}{% else %}—{% endif %}</td>
+            <td>{% if c.open and r.handover %}<span {% if r.state == 'difference' %}style="color:#B94A3F; font-weight:700;"{% endif %}>{{ r.diff|floatformat:3 }}</span>{% else %}—{% endif %}</td>
+            <td>
+              {% if r.state == 'reconciled' %}<span class="badge ok">Approved</span>
+              {% elif r.state == 'ready' %}<span class="badge ok" style="background:#E6F1FB; color:#185FA5;">Ready</span>
+              {% elif r.state == 'difference' %}<span class="badge flag">Difference</span>
+              {% else %}<span class="badge flag" style="background:#F0EEE7; color:#8A8578;">Not collected yet</span>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr style="background:#F0EEE7; font-weight:700; color:#1F3B4D;">
+            <td colspan="2">Total</td>
+            <td style="white-space:nowrap;">{{ c.waiter_all|floatformat:3 }} RO</td>
+            <td style="white-space:nowrap;">{% if c.collected %}{{ c.collector_total|floatformat:3 }} RO{% else %}—{% endif %}</td>
+            <td style="white-space:nowrap;">{% if c.open %}<span {% if c.diff_total %}style="color:#B94A3F;"{% endif %}>{{ c.diff_total|floatformat:3 }} RO</span>{% else %}—{% endif %}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+
+      {% if c.open %}
+        {% if c.counts.difference %}<div class="hint" style="margin:8px 0 0;">A shift with a difference is not approved here: open it and write the Audit note.</div>{% endif %}
+        {% if c.ready_ids %}
+          <textarea name="note" rows="2" placeholder="Note (optional)" style="max-width:100%; margin-top:10px;"></textarea>
+          <button type="button" class="btn" style="margin-top:10px;" onclick="calConfirm(this)">Approve Cash</button>
+          <template class="cal-confirm" data-title="Are you sure of the collector's count?" data-ok="Approve cash">
+            <div class="cal-modal-meta"><b>{{ branch.name }}</b> · {{ panel.date|date:"l, M j, Y" }}</div>
+            <table class="cal-modal-table">
+              <thead><tr><th>Shift</th><th>Reference</th><th>Collector Cash</th></tr></thead>
+              <tbody>
+              {% for r in c.ready_rows %}<tr><td>Shift {{ r.entry.shift }}</td><td>{{ r.entry.reference_id }}</td><td>{{ r.handover.cash_total|floatformat:3 }} RO</td></tr>{% endfor %}
+              </tbody>
+              <tfoot><tr><td colspan="2">Collector total</td><td>{{ c.ready_total|floatformat:3 }} RO</td></tr></tfoot>
+            </table>
+            <p>The cash of {{ c.ready_rows|length }} shift{{ c.ready_rows|length|pluralize }} is approved with the collector's count above.</p>
+          </template>
+        {% elif not c.counts.difference %}
+          <div class="hint" style="margin:8px 0 0;">The cash of every shift of this day is approved.</div>
+        {% endif %}
+      {% else %}
+        <div class="hint" style="margin:8px 0 0;">Opens with the differences once the collector has handed over every shift of this day.</div>
+      {% endif %}
+    </form>
+    {% endwith %}
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+</div>

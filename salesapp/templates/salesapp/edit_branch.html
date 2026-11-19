@@ -13,6 +13,11 @@
     <div class="grid grid-2">
       <div><label>Branch Name</label><input name="name" value="{{ branch.name }}" required></div>
       <div><label>Branch Code (used for branch login)</label><input name="code" value="{{ branch.code }}" placeholder="e.g. AKL"></div>
+      <div>
+        <label>Start date (Audit calendar)</label>
+        <input type="date" name="start_date" value="{{ branch.start_date|date:'Y-m-d' }}">
+        <div style="font-size:12px; color:#8A8578; margin-top:4px;">The branch calendar on the Audit page marks a day with no report as Missing only from this date on. Leave empty to start from the branch's first report.</div>
+      </div>
     </div>
     <button type="submit" class="btn" style="margin-top:14px;">Save Changes</button>
     <a href="{% url 'add_branch' %}" class="btn secondary" style="margin-left:8px; text-decoration:none; display:inline-block;">Cancel</a>

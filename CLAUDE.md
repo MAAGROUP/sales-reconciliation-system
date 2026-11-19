@@ -16,8 +16,8 @@ python manage.py create_admin <username> <password>   # bootstrap the first admi
 python manage.py runserver                 # http://127.0.0.1:8000/login/
 
 python manage.py test salesapp                                          # all tests
-python manage.py test salesapp.tests.WaiterStatusTests                  # one class
-python manage.py test salesapp.tests.WaiterStatusTests.test_other_days_do_not_count  # one test
+python manage.py test salesapp.tests.CalendarStageTests                  # one class
+python manage.py test salesapp.tests.CalendarStageTests.test_full_day_moves_through_every_stage  # one test
 
 python manage.py makemigrations salesapp   # after any model change
 ```
@@ -47,6 +47,8 @@ When every shift `1..branch.shifts_per_day` for a day is approved, Audit closes 
 **Edit history.** On first save, both models capture an `original_snapshot`. Audit corrections are diffed against that snapshot (`_shift_field_diffs`, `_compute_handover_changes`) and displayed as "changed from X to Y". Any significant action should call `log_activity(request, action, description, details=...)`. The `action` must be one of `ActivityLog.ACTION_CHOICES`, and adding a new one requires a migration.
 
 **Business date.** Branches have opening hours (`day_cutoff` → `day_end`), which may run past midnight. `Branch.business_date()` decides which date a submission belongs to. A submission made after closing goes to the next day and is flagged `submitted_late`. Use this method instead of `timezone.localdate()` whenever you need the date of a branch's report.
+
+**Branch calendar (Audit page).** Opening a branch on `/dashboard/` fetches `branch_calendar_view` (`/dashboard/calendar/`), which returns only the `_calendar_body.html` fragment: a month of stage counts per business day and the selected day's approve cards. The cards post to the existing views (`approve_all`, `close_day`, `cash_reconcile_action`, `collector_approve_all`) with a `next` that reopens the same branch + day (`?cal_branch=&cal_month=&cal_day=`). Those views prefer `_safe_next(request)` over their default redirect, so keep that when touching them. A day counts as Missing only from `Branch.start_date` (or the branch's first report when unset). On the calendar a shift stays in Sales Review until its day is closed (`_calendar_stage`); everywhere else the stage comes from `_entry_stage`.
 
 **Other modules:** `BankDeposit` (+ `BankDepositEvent`/`BankDepositFile`) is the collector's periodic bank deposit covering a date range of branch cash, with excluded branches and a return/approve flow. `WaiterResetLink` provides token-based password reset links for waiters. The daily sales report is available as HTML and as an Excel export (openpyxl). Uploaded files go to `media/` (gitignored).
 

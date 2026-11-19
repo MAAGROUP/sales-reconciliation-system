@@ -13,14 +13,14 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
-from django.http import HttpResponse, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.core.cache import cache
 from django.template.defaultfilters import date as date_filter
 from django.views.decorators.cache import never_cache
 from django.core.exceptions import PermissionDenied
-from django.db.models import Sum, Q, Count
+from django.db.models import Sum, Q, Count, Min
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 
@@ -366,27 +366,6 @@ def _entry_cash_context(entry):
             **_cash_subtotals(entry_denoms, entry_aed_denoms)}
 
 
-def _handover_cash_context(handover):
-    """The collector's count, broken down the same way (only denominations actually counted)."""
-    aed_rate = float(handover.shift_entry.aed_exchange_rate or 0)
-    denoms = [
-        {'denom': d, 'count': handover.cash_counts.get(d, 0), 'amount': float(d) * int(handover.cash_counts.get(d, 0) or 0)}
-        for d in DENOMS if handover.cash_counts.get(d, 0)
-    ]
-    aed = [
-        {
-            'denom': d,
-            'count': handover.cash_counts_aed.get(d, 0),
-            'amount': float(d) * int(handover.cash_counts_aed.get(d, 0) or 0),
-            'omr_equivalent': float(d) * int(handover.cash_counts_aed.get(d, 0) or 0) * aed_rate,
-        }
-        for d in AED_DENOMS if handover.cash_counts_aed.get(d, 0)
-    ]
-    subtotals = _cash_subtotals(denoms, aed)
-    return {'handover_denoms': denoms, 'handover_aed_denoms': aed,
-            'handover_omr_total': subtotals['cash_omr_total'], 'handover_aed_in_omr': subtotals['cash_aed_in_omr']}
-
-
 def _shift_snapshot(entry):
     """The same shape as ShiftEntry.original_snapshot, built from an entry's
     CURRENT state — used to capture 'before' just ahead of applying an edit,
@@ -557,27 +536,6 @@ def _compute_handover_changes(handover):
         elif new != first:
             changes[f'cdenom_aed_{d}'] = f'Changed from {first} to {new}'
     return changes
-
-
-def _build_stepper(entry, handover, review_log):
-    """The four stages a shift moves through. 'current' marks the first one
-    not yet done — that's the stage Audit still needs to act on. Each step
-    carries the id of the card it should jump to when clicked."""
-    steps = [
-        {'key': 'submitted', 'label': 'Waiter Submitted', 'anchor': 'stepWaiterSubmitted',
-         'done': True, 'timestamp': entry.created_at},
-        {'key': 'sales_reviewed', 'label': 'Sales Reviewed', 'anchor': 'stepSalesReviewed',
-         'done': entry.is_audited, 'timestamp': review_log.created_at if review_log else None},
-        {'key': 'cash_collected', 'label': 'Cash Collected', 'anchor': 'stepCashCollected',
-         'done': handover is not None, 'timestamp': handover.recounted_at if handover else None},
-        {'key': 'cash_reconciled', 'label': 'Cash Reconciled', 'anchor': 'stepCashCollected',
-         'done': bool(handover and handover.reconciled),
-         'timestamp': handover.reconciled_at if (handover and handover.reconciled) else None},
-    ]
-    current_index = next((i for i, s in enumerate(steps) if not s['done']), None)
-    for i, s in enumerate(steps):
-        s['current'] = (i == current_index)
-    return {'steps': steps, 'complete': current_index is None}
 
 
 def _parse_discount_rows(request):
@@ -1090,24 +1048,10 @@ def collector_view(request):
             ).order_by('-created_at')
         )
 
-    entry_denoms = None
-    entry_aed_denoms = None
+    entry_cash = {}   # the waiter's cash by denomination + OMR / AED totals (the Cash Report card)
     entry_visa_rows = None
     if selected_entry:
-        entry_denoms = [
-            {'denom': d, 'count': selected_entry.cash_counts.get(d, 0), 'amount': float(d) * int(selected_entry.cash_counts.get(d, 0) or 0)}
-            for d in DENOMS
-        ]
-        aed_rate = float(selected_entry.aed_exchange_rate or 0)
-        entry_aed_denoms = [
-            {
-                'denom': d,
-                'count': selected_entry.cash_counts_aed.get(d, 0),
-                'amount': float(d) * int(selected_entry.cash_counts_aed.get(d, 0) or 0),
-                'omr_equivalent': float(d) * int(selected_entry.cash_counts_aed.get(d, 0) or 0) * aed_rate,
-            }
-            for d in AED_DENOMS if selected_entry.cash_counts_aed.get(d, 0)
-        ]
+        entry_cash = _entry_cash_context(selected_entry)
         entry_visa_rows = _build_visa_rows(selected_entry)
 
     shift_filter = request.GET.getlist('shift_filter')
@@ -1189,15 +1133,12 @@ def collector_view(request):
             if e.show_date_divider:
                 e.day = days[e.date]
 
-    cash_subtotals = _cash_subtotals(entry_denoms, entry_aed_denoms)
     collector_day = _collector_day_rows(selected_entry) if selected_entry and not selected_entry.is_archived else None
 
     context = {
-        **cash_subtotals,
         'collector_day': collector_day,
         'can_approve': _can_collect(request.user.profile),
         'filter_pairs': _filter_pairs(request.GET),
-        'all_entries': all_entries_qs,
         'branch_groups': branch_groups,
         'shift_filter': shift_filter,
         **_branch_picker_context(selected_branches),
@@ -1208,8 +1149,7 @@ def collector_view(request):
         'denoms': DENOMS,
         'selected_entry': selected_entry,
         'selected_handover': selected_handover,
-        'entry_denoms': entry_denoms,
-        'entry_aed_denoms': entry_aed_denoms,
+        **entry_cash,
         'entry_visa_rows': entry_visa_rows,
         'aed_denoms': AED_DENOMS,
         'delivery_sources': DELIVERY_SOURCES,
@@ -1233,9 +1173,10 @@ def _approve_all(request, entry):
     shift). The optional note is saved as the Audit note of each shift it approves."""
     note = request.POST.get('all_note', '').strip()
     waiting = list(ShiftEntry.objects.filter(branch=entry.branch, date=entry.date, is_archived=False, is_audited=False).order_by('shift'))
+    back = _safe_next(request) or (_reopen_url(request, '/dashboard/', entry.id) + '#dayCloseCard')   # straight back to the Foodics box
     if not waiting:
         messages.info(request, 'Every shift of this day is already approved.')
-        return redirect(_reopen_url(request, '/dashboard/', entry.id) + '#dayCloseCard')   # straight back to the Foodics box
+        return redirect(back)
     for e in waiting:
         if not e.original_snapshot:
             e.original_snapshot = _shift_snapshot(e)   # legacy shift: baseline = how it stood before
@@ -1251,7 +1192,7 @@ def _approve_all(request, entry):
         log_activity(request, 'entry_audited', description=e.reference_id, details='\n'.join(lines))
     refs = ', '.join(e.reference_id for e in waiting)
     messages.success(request, f'Approved {len(waiting)} shift(s): {refs}.')
-    return redirect(_reopen_url(request, '/dashboard/', entry.id) + '#dayCloseCard')   # straight back to the Foodics box
+    return redirect(back)
 
 
 def _decide_request(request, entry):
@@ -1260,7 +1201,7 @@ def _decide_request(request, entry):
     the same number, which is archived). Reject: it stays archived."""
     if entry.request_status != 'pending':
         messages.error(request, 'This request was already decided.')
-        return redirect(f'/dashboard/?entry_id={entry.id}')
+        return redirect(f'/dashboard/?entry_id={entry.id}#requestCard')
     decision = request.POST.get('decision')
     if decision == 'approve':
         replaced = list(ShiftEntry.objects.filter(branch=entry.branch, date=entry.date, shift=entry.shift, is_archived=False).exclude(pk=entry.pk))
@@ -1275,11 +1216,12 @@ def _decide_request(request, entry):
         log_activity(request, 'entry_unarchived', description=entry.reference_id,
                      details=f'Waiter request approved ({entry.request_reason}){note}')
         messages.success(request, f'Request {entry.reference_id} approved{note}. Review the shift again and re-close the day.')
+        return redirect(f'/dashboard/?entry_id={entry.id}#stepSalesReviewed')
     elif decision == 'reject':
         reject_note = (request.POST.get('reject_note') or '').strip()
         if not reject_note:
             messages.error(request, 'Please write the reason for rejecting this request.')
-            return redirect(f'/dashboard/?entry_id={entry.id}')
+            return redirect(f'/dashboard/?entry_id={entry.id}#requestCard')
         entry.request_status = 'rejected'
         entry.request_decision_note = reject_note
         entry.save(update_fields=['request_status', 'request_decision_note'])
@@ -1288,7 +1230,7 @@ def _decide_request(request, entry):
         messages.success(request, f'Request {entry.reference_id} rejected.')
     else:
         messages.error(request, 'Please choose approve or reject.')
-    return redirect(f'/dashboard/?entry_id={entry.id}')
+    return redirect(f'/dashboard/?entry_id={entry.id}#requestCard')
 
 
 @role_required('audit', 'manager', 'admin')
@@ -1314,7 +1256,7 @@ def dashboard_view(request):
             return _approve_all(request, entry)
         if entry.request_status == 'pending':
             messages.error(request, 'This is a waiter request. Approve or reject it first.')
-            return redirect(f'/dashboard/?entry_id={entry.id}')
+            return redirect(f'/dashboard/?entry_id={entry.id}#requestCard')
         before_snap = _shift_snapshot(entry)
         if not entry.original_snapshot:
             entry.original_snapshot = before_snap   # legacy shift: baseline = how it stood before this edit
@@ -1363,7 +1305,7 @@ def dashboard_view(request):
             log_activity(request, 'entry_edited', description=entry.reference_id, details='\n'.join(cash_lines))
 
         messages.success(request, f'{entry.reference_id} sales review approved.')
-        return redirect(_reopen_url(request, '/dashboard/', entry_id))
+        return redirect(_reopen_url(request, '/dashboard/', entry_id) + '#stepSalesReviewed')   # back on the Sales Review card
 
     selected_entry = None
     selected_handover = None
@@ -1377,28 +1319,14 @@ def dashboard_view(request):
                 action='entry_audited', description=selected_entry.reference_id
             ).order_by('-created_at').first()
 
-    entry_denoms = entry_aed_denoms = entry_visa_rows = None
-    handover_denoms = handover_aed_denoms = None
-    handover_omr_total = handover_aed_in_omr = None
     selected_has_difference = False
-    stepper = None
     shift_changes = {}
     handover_changes = {}
     if selected_entry:
-        cash_ctx = _entry_cash_context(selected_entry)
-        entry_denoms = cash_ctx['entry_denoms']
-        entry_aed_denoms = cash_ctx['entry_aed_denoms']
-        entry_visa_rows = _build_visa_rows(selected_entry)
         shift_changes = _compute_shift_changes(selected_entry)
         if selected_handover is not None:
-            h_ctx = _handover_cash_context(selected_handover)
-            handover_denoms = h_ctx['handover_denoms']
-            handover_aed_denoms = h_ctx['handover_aed_denoms']
-            handover_omr_total = h_ctx['handover_omr_total']
-            handover_aed_in_omr = h_ctx['handover_aed_in_omr']
             selected_has_difference = selected_handover.has_difference(CASH_TOLERANCE)
             handover_changes = _compute_handover_changes(selected_handover)
-        stepper = _build_stepper(selected_entry, selected_handover, review_log)
 
     sales_history = None
     cash_history = None
@@ -1466,48 +1394,13 @@ def dashboard_view(request):
     if selected_stages:
         staged = [(e, st) for e, st in staged if st in selected_stages]
 
-    day_closes = {(d.branch_id, d.date): d for d in DayClose.objects.filter(
-        branch_id__in={e.branch_id for e, _ in staged}, date__in={e.date for e, _ in staged})}
-    last_shift = {}
-    for e, _ in staged:
-        k = (e.branch_id, e.date)
-        if k not in last_shift or int(e.shift) > int(last_shift[k]):
-            last_shift[k] = e.shift
-
+    # One line per branch that has shifts under the filters; opening it loads the branch's
+    # calendar (branch_calendar_view). The line shows those shifts' Sales Actual.
     branch_groups_map = {}
-    for e, stage in staged:
-        k = (e.branch_id, e.date)
-        # the day's Foodics / variance sit on the day's last shift row (one figure per day)
-        day = day_closes.get(k) if str(last_shift[k]) == str(e.shift) else None
-        has_issue = bool(day) and abs(day.variance) > threshold
-
-        group = branch_groups_map.setdefault(e.branch_id, {
-            'branch': e.branch,
-            'rows': [],
-            'total_variance': Decimal('0'),
-            'total_actual': Decimal('0'),
-        })
-        group['rows'].append({'entry': e, 'stage': stage, 'has_issue': has_issue, 'day': day,
-                              'day_variance': day.variance if day else None})
-        if day:
-            group['total_variance'] += day.variance
+    for e, _ in staged:
+        group = branch_groups_map.setdefault(e.branch_id, {'branch': e.branch, 'total_actual': Decimal('0')})
         group['total_actual'] += e.sales_actual
-
     branch_groups = sorted(branch_groups_map.values(), key=lambda g: g['branch'].name)
-
-    # Sort each branch's rows by date (newest first) and flag the first row
-    # of each date so the template can draw a divider line before it.
-    for group in branch_groups:
-        group['rows'].sort(key=lambda r: (r['entry'].date, r['entry'].created_at), reverse=True)
-        previous_date = None
-        date_group = -1
-        for row in group['rows']:
-            row['show_date_divider'] = (row['entry'].date != previous_date)
-            if row['show_date_divider']:
-                date_group += 1
-            row['date_group'] = date_group
-            previous_date = row['entry'].date
-        group['date_group_count'] = date_group + 1
 
     context = {
         'review_log': review_log,
@@ -1515,7 +1408,8 @@ def dashboard_view(request):
         'day_status': day_status,
         'cash_day': cash_day,
         'day_collector_history': day_collector_history,
-        'day_history': day_history,
+        # Sales review of this shift + Day Close of its day, in one timeline (newest first).
+        'sales_day_history': sorted((sales_history or []) + (day_history or []), key=lambda l: l.created_at, reverse=True) if selected_entry else None,
         'day_flagged': day_flagged,
         'pending_requests': list(ShiftEntry.objects.select_related('branch').filter(request_status='pending').order_by('created_at')),
         'branch_groups': branch_groups,
@@ -1535,16 +1429,7 @@ def dashboard_view(request):
         'is_viewer': is_viewer,
         'selected_handover': selected_handover,
         'selected_has_difference': selected_has_difference,
-        'entry_denoms': entry_denoms,
-        'entry_aed_denoms': entry_aed_denoms,
         'visa_urls': _visa_urls(selected_entry) if selected_entry else {},
-        'entry_visa_rows': entry_visa_rows,
-        'handover_denoms': handover_denoms,
-        'handover_aed_denoms': handover_aed_denoms,
-        'handover_omr_total': handover_omr_total,
-        'handover_aed_in_omr': handover_aed_in_omr,
-        'stepper': stepper,
-        'sales_history': sales_history,
         'cash_history': cash_history,
         'shift_changes': shift_changes,
         'handover_changes': handover_changes,
@@ -2064,7 +1949,7 @@ def _close_day(request, entry):
     """Audit closes (or re-closes) the day of the opened shift: one Foodics figure for the
     whole day. Every change is logged as from -> to, like the rest of the audit trail."""
     status = _day_status(entry.branch, entry.date)
-    back = redirect(_reopen_url(request, '/dashboard/', entry.id) + '#dayCloseCard')   # stay on the day-close card
+    back = redirect(_safe_next(request) or (_reopen_url(request, '/dashboard/', entry.id) + '#dayCloseCard'))   # stay on the day-close card
     if not status['can_close']:
         parts = []
         if status['missing']:
@@ -2339,7 +2224,7 @@ def daily_sales_report_xlsx_view(request):
     wb = Workbook()
     ws = wb.active
     ws.title = 'Daily Sales Report'
-    navy, cream, grey = '1F3B4D', 'F7F5EE', '9A9585'
+    navy = '1F3B4D'
     thin = Side(style='thin', color='E3DFD3')
     NUM = '#,##0.000;[Red]-#,##0.000'
 
@@ -2501,8 +2386,16 @@ def edit_branch_view(request, branch_id):
             messages.error(request, 'Another branch already uses that code.')
             return redirect('edit_branch', branch_id=branch.id)
 
+        raw_start = request.POST.get('start_date', '').strip()
+        try:
+            start_date = datetime.date.fromisoformat(raw_start) if raw_start else None
+        except ValueError:
+            messages.error(request, 'Please enter a valid start date.')
+            return redirect('edit_branch', branch_id=branch.id)
+
         branch.name = name
         branch.code = code or None
+        branch.start_date = start_date
         branch.save()
         log_activity(request, 'branch_edited', description=branch.name)
         messages.success(request, f'Branch "{branch.name}" updated.')
@@ -2669,7 +2562,7 @@ def archive_entry_view(request, entry_id):
     log_activity(request, f'entry_{state}', description=entry.reference_id)
     messages.success(request, f'{entry.reference_id} {state}.')
     referer = request.META.get('HTTP_REFERER')
-    return redirect(referer or 'collector')
+    return redirect(_safe_next(request) or referer or 'collector')
 
 
 @role_required('collector', 'audit', 'admin')
@@ -2871,6 +2764,8 @@ def cash_reconcile_action_view(request):
         messages.error(request, 'Unknown action.')
 
     # Back to the same report, on the card that was just used (not the top of the page).
+    if _safe_next(request):   # sent from the Calendar
+        return redirect(_safe_next(request))
     back = request.META.get('HTTP_REFERER', '')
     if not back or not url_has_allowed_host_and_scheme(back, allowed_hosts={request.get_host()}, require_https=request.is_secure()):
         back = '/dashboard/'
@@ -3220,3 +3115,193 @@ def waiter_reset_password_view(request, token):
             # the login page opens with this waiter's branch code and Punch ID already filled in
             return redirect(f"{reverse('login')}?{urlencode({'branch_code': prof.branch.code if prof.branch else '', 'punch_id': prof.punch_id})}")
     return render(request, 'salesapp/waiter_reset_password.html', {'waiter': link.user.profile})
+
+
+# ───────────────────────── Branch Calendar (inside the Audit page) ─────────────────────────
+# Opening a branch on the Audit page loads this calendar in place: one month, every business
+# day showing how many of its shifts sit in each stage and whether the day is closed. Clicking
+# a day opens its shifts with the approve cards (the forms post to the existing views, then come
+# back to the Audit page on the same branch + day through `next`).
+
+CAL_STAGES = [
+    ('missing', 'Missing'),
+    ('awaiting_sales', 'Sales Review'),
+    ('awaiting_collection', 'Collection'),
+    ('awaiting_cash_approval', 'Cash Approval'),
+    ('complete', 'Complete'),
+]
+
+
+def _branch_start(branch):
+    """The first day the calendar counts missing shifts for: the branch's start date, or the
+    date of its first report when no start date was set (None = no reports at all yet)."""
+    if branch.start_date:
+        return branch.start_date
+    return ShiftEntry.objects.filter(branch=branch, is_archived=False).aggregate(d=Min('date'))['d']
+
+
+def _calendar_stage(entry, day_closed):
+    """A shift's stage on the calendar. Sales Review lasts until the day is closed (sales
+    approved AND Foodics entered); only then does the shift move on to Collection."""
+    return _entry_stage(entry) if day_closed else 'awaiting_sales'
+
+
+def _calendar_link(branch, month, day=None):
+    q = {'branch': branch.id, 'month': month.strftime('%Y-%m')}
+    if day:
+        q['day'] = day.isoformat()
+    return reverse('branch_calendar') + '?' + urlencode(q)
+
+
+def _calendar_return(branch, month, day, focus=''):
+    """The Audit page reopened on this branch + day. focus='foodics' lands on the Close Day
+    box with the cursor in the Foodics field (after Approve Shifts / Close Day)."""
+    q = {'cal_branch': branch.id, 'cal_month': month.strftime('%Y-%m'), 'cal_day': day.isoformat()}
+    if focus:
+        q['cal_focus'] = focus
+    return '/dashboard/?' + urlencode(q) + f'#calBranch{branch.id}'
+
+
+@role_required('audit', 'manager', 'admin')
+def branch_calendar_view(request):
+    """The calendar of one branch + month (an HTML fragment the Audit page loads)."""
+    profile = request.user.profile
+    threshold = Decimal(str(settings.VARIANCE_THRESHOLD))
+    raw = request.GET.get('branch', '')
+    branch = get_object_or_404(Branch, id=int(raw)) if raw.isdigit() else None
+    if branch is None:
+        raise Http404('No branch given.')
+    today = branch.business_date()
+
+    # ----- which month (a selected day wins, so its link always opens the right month) -----
+    selected_day = None
+    try:
+        selected_day = datetime.date.fromisoformat(request.GET.get('day', ''))
+    except ValueError:
+        pass
+    try:
+        first = datetime.date.fromisoformat(request.GET.get('month', '') + '-01')
+    except ValueError:
+        first = (selected_day or today).replace(day=1)
+    if selected_day and selected_day.replace(day=1) != first:
+        selected_day = None
+    next_first = (first + datetime.timedelta(days=32)).replace(day=1)
+    last = next_first - datetime.timedelta(days=1)
+    prev_first = (first - datetime.timedelta(days=1)).replace(day=1)
+
+    # ----- the month's data: a few queries, sorted into days in Python -----
+    n_shifts = max(int(branch.shifts_per_day or 1), 1)
+    wanted = [str(i) for i in range(1, n_shifts + 1)]
+    start = _branch_start(branch)
+    by_date = {}
+    for e in (ShiftEntry.objects.filter(branch=branch, date__gte=first, date__lte=last, is_archived=False)
+              .select_related('collector').order_by('shift', 'id')):
+        by_date.setdefault(e.date, []).append(e)
+    closes = {c.date: c for c in DayClose.objects.filter(branch=branch, date__gte=first, date__lte=last)}
+    pending = set(ShiftEntry.objects.filter(branch=branch, date__gte=first, date__lte=last,
+                                            request_status='pending').values_list('date', flat=True))
+
+    days = []
+    d = first
+    while d <= last:
+        entries = by_date.get(d, [])
+        close = closes.get(d)
+        counts = {k: 0 for k, _ in CAL_STAGES}
+        for e in entries:
+            counts[_calendar_stage(e, close is not None)] += 1
+        sent = {e.shift for e in entries}
+        not_sent = sum(1 for s in wanted if s not in sent)
+        if d > today:
+            kind = 'future'
+        elif start is None or d < start:
+            kind = 'before'
+        elif d == today:
+            kind = 'today'
+        else:
+            kind = 'past'
+            counts['missing'] = not_sent
+        variance = (sum((e.sales_actual for e in entries), Decimal('0'))
+                    - Decimal(str(close.expected_foodics or 0))) if close else None
+        if counts['missing']:
+            tone = 'missing'
+        elif entries and counts['complete'] == len(entries) and not not_sent:
+            tone = 'done'
+        elif entries:
+            tone = 'progress'
+        else:
+            tone = 'empty'
+        days.append({
+            'date': d, 'kind': kind, 'tone': tone,
+            'chips': [(key, label, counts[key]) for key, label in CAL_STAGES if counts[key]],
+            'waiting_today': not_sent if kind == 'today' else 0,
+            'flagged': variance is not None and abs(variance) > threshold,
+            'request': d in pending,
+            'selected': d == selected_day,
+            'is_today': d == today,
+            'url': _calendar_link(branch, first, d),
+        })
+        d += datetime.timedelta(days=1)
+    lead = (first.weekday() + 1) % 7   # the grid starts on Sunday
+
+    # ----- the selected day: its shifts and the approve cards -----
+    panel = None
+    if selected_day:
+        status = _day_status(branch, selected_day)
+        close = status['day']
+        day_entries = [r['entry'] for r in status['rows'] if r['entry']]
+        counted = start is not None and start <= selected_day < today
+        rows = []
+        for r in status['rows']:
+            e = r['entry']
+            if e is None:
+                rows.append({'shift': r['shift'], 'entry': None,
+                             'stage': 'missing' if counted else 'not_sent',
+                             'stage_label': 'Missing' if counted else 'Not submitted yet'})
+                continue
+            stage = _calendar_stage(e, close is not None)
+            h = e.collector_record
+            rows.append({'shift': r['shift'], 'entry': e, 'stage': stage, 'stage_label': dict(CAL_STAGES)[stage],
+                         'collector_cash': h.cash_total if h else None})
+        anchor = day_entries[0] if day_entries else None
+        can_audit = profile.role == 'audit' or profile.is_full_access   # managers only look
+        variance = (status['total_actual'] - Decimal(str(close.expected_foodics or 0))) if close else None
+        cash = _cash_day(anchor) if anchor else None
+        if cash:
+            # The Approve Cash card always shows the day's cash (faded), and opens, with the
+            # differences, once the collector has handed over every shift of the day.
+            cash['open'] = bool(cash['rows']) and cash['counts']['not_collected'] == 0
+            cash['collected'] = len(cash['rows']) - cash['counts']['not_collected']
+            cash['waiter_all'] = sum((Decimal(str(r['entry'].cash_total)) for r in cash['rows']), Decimal('0'))
+            # The popup before Approve Cash: Audit confirms the collector's count, shift by shift.
+            cash['ready_rows'] = [r for r in cash['rows'] if r['state'] == 'ready']
+            cash['ready_total'] = sum((Decimal(str(r['handover'].cash_total)) for r in cash['ready_rows']), Decimal('0'))
+        panel = {
+            'date': selected_day,
+            'rows': rows,
+            'anchor': anchor,
+            'status': status,
+            'close': close,
+            'variance': variance,
+            'flagged': variance is not None and abs(variance) > threshold,
+            'next': _calendar_return(branch, first, selected_day),
+            'next_foodics': _calendar_return(branch, first, selected_day, focus='foodics'),
+            'show_collect': bool(anchor) and profile.is_full_access,   # Admin / IT also hold the collector's button
+            'collect_count': sum(1 for e in day_entries if not e.collector_approved or e.collector_record is None),
+            'show_audit': bool(anchor) and can_audit,
+            'cash': cash,
+            'close_url': _calendar_link(branch, first),
+        }
+
+    return render(request, 'salesapp/_calendar_body.html', {
+        'branch': branch,
+        'month': first,
+        'prev_url': _calendar_link(branch, prev_first),
+        'next_url': _calendar_link(branch, next_first),
+        'lead_blanks': range(lead),
+        'days': days,
+        'start': start,
+        'start_is_set': bool(branch.start_date),
+        'n_shifts': n_shifts,
+        'panel': panel,
+        'variance_threshold': threshold,
+    })
