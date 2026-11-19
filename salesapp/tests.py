@@ -226,6 +226,10 @@ class ApprovalStaysTests(AuditFlowTestCase):
         self.assertIn('Where:', log.details)
         history = self.client.get(f'/dashboard/?entry_id={entry.id}').context['sales_day_history']
         self.assertIn(log, history)
+        self.login('admin')
+        page = self.client.get('/audit-log/?action=review_reset')
+        self.assertContains(page, 'Sales Review Reset')
+        self.assertContains(page, 'Where:')                    # the details show on the Audit Log page too
 
     def test_approving_does_not_log_a_reset(self):
         self.login('audit')

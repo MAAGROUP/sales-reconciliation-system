@@ -41,13 +41,13 @@
         <td>{{ log.created_at|date:"Y-m-d H:i" }}</td>
         <td>{{ log.username_snapshot|default:"-" }}</td>
         <td>
-          {% if 'failed' in log.action %}
+          {% if 'failed' in log.action or log.action == 'review_reset' %}
             <span class="badge flag">{{ log.get_action_display }}</span>
           {% else %}
             <span class="badge ok">{{ log.get_action_display }}</span>
           {% endif %}
         </td>
-        <td>{{ log.description|default:"-" }}</td>
+        <td>{{ log.description|default:"-" }}{% if log.action == 'review_reset' %}<div style="font-size:12px; color:#B94A3F; white-space:pre-line; margin-top:4px;">{{ log.details }}</div>{% endif %}</td>
         <td style="color:#8A8578; font-size:12px;">{{ log.ip_address|default:"-" }}</td>
       </tr>
       {% empty %}

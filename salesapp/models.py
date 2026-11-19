@@ -12,15 +12,16 @@ def _log_review_reset(entry):
     import inspect
     import os
     try:
-        user, where = None, []
+        user, ip, where = None, None, []
         for frame in inspect.stack(context=0)[2:]:
             if 'salesapp' in frame.filename and len(where) < 4:
                 where.append(f'{os.path.basename(frame.filename)}:{frame.lineno} {frame.function}')
             request = frame.frame.f_locals.get('request')
             if user is None and getattr(getattr(request, 'user', None), 'is_authenticated', False):
                 user = request.user
+                ip = request.META.get('REMOTE_ADDR') or None
         ActivityLog.objects.create(
-            user=user, username_snapshot=user.username if user else '', action='review_reset',
+            user=user, username_snapshot=user.username if user else '', action='review_reset', ip_address=ip,
             description=entry.reference_id,
             details='The approved sales review was removed: the shift is back in Sales Review.\n'
                     'Where: ' + (' <- '.join(where) or 'outside the app (shell / admin)'))
